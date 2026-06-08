@@ -1,5 +1,7 @@
+import Link from "next/link";
+
 export default function Home() {
-  const sections = [
+  const sections: { title: string; description: string; href?: string }[] = [
     {
       title: "Upload Dataset",
       description: "Upload CSV or Excel files and text context documents.",
@@ -11,10 +13,12 @@ export default function Home() {
     {
       title: "Cleaning Plan",
       description: "Review AI-proposed cleaning steps and approve, reject, or modify each one.",
+      href: "/cleaning-plan",
     },
     {
       title: "Feature Engineering",
       description: "Define and approve derived metrics: running revenue, ARPPU, growth rates, and more.",
+      href: "/metrics-plan",
     },
     {
       title: "Visualization",
@@ -37,21 +41,37 @@ export default function Home() {
         </p>
 
         <div className="space-y-4">
-          {sections.map((section, i) => (
-            <div
-              key={section.title}
-              className="bg-white border border-gray-200 rounded-xl p-6 opacity-60 cursor-not-allowed"
-            >
-              <div className="flex items-center gap-3 mb-2">
-                <span className="text-sm font-mono text-gray-400">{String(i + 1).padStart(2, "0")}</span>
-                <h2 className="text-lg font-semibold text-gray-700">{section.title}</h2>
-                <span className="ml-auto text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full">
-                  Coming soon
-                </span>
+          {sections.map((section, i) => {
+            const card = (
+              <div
+                className={`bg-white border border-gray-200 rounded-xl p-6 ${
+                  section.href ? "hover:border-gray-400 transition-colors" : "opacity-60 cursor-not-allowed"
+                }`}
+              >
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="text-sm font-mono text-gray-400">{String(i + 1).padStart(2, "0")}</span>
+                  <h2 className="text-lg font-semibold text-gray-700">{section.title}</h2>
+                  <span
+                    className={`ml-auto text-xs px-2 py-1 rounded-full ${
+                      section.href
+                        ? "bg-blue-100 text-blue-600"
+                        : "bg-gray-100 text-gray-500"
+                    }`}
+                  >
+                    {section.href ? "Preview" : "Coming soon"}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-500 ml-9">{section.description}</p>
               </div>
-              <p className="text-sm text-gray-500 ml-9">{section.description}</p>
-            </div>
-          ))}
+            );
+            return section.href ? (
+              <Link key={section.title} href={section.href}>
+                {card}
+              </Link>
+            ) : (
+              <div key={section.title}>{card}</div>
+            );
+          })}
         </div>
       </div>
     </main>

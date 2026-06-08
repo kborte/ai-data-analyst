@@ -23,6 +23,7 @@ export default function Home() {
     {
       title: "Visualization",
       description: "Explore AI-suggested charts generated from your cleaned, enriched dataset.",
+      href: "/charts-preview",
     },
     {
       title: "Insight Report",

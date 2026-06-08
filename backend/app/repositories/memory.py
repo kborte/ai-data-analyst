@@ -11,6 +11,7 @@ from app.schemas.dataset import Dataset, DatasetSource, DatasetTable, DatasetVer
 from app.schemas.features import FeaturePlan, FeatureResult
 from app.schemas.profile import DataProfile
 from app.schemas.source import DataSource, UploadedFile
+from app.schemas.visualization import VisualizationPlan, VisualizationResult
 
 
 class DataSourceRepository:
@@ -191,3 +192,33 @@ class FeatureResultRepository:
 
     def list_by_plan(self, feature_plan_id: UUID) -> list[FeatureResult]:
         return [v for v in self._store.values() if v.feature_plan_id == feature_plan_id]
+
+
+class VisualizationPlanRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, VisualizationPlan] = {}
+
+    def save(self, obj: VisualizationPlan) -> VisualizationPlan:
+        self._store[obj.visualization_plan_id] = obj
+        return obj
+
+    def get(self, visualization_plan_id: UUID) -> VisualizationPlan | None:
+        return self._store.get(visualization_plan_id)
+
+    def list_by_version(self, dataset_version_id: UUID) -> list[VisualizationPlan]:
+        return [v for v in self._store.values() if v.dataset_version_id == dataset_version_id]
+
+
+class VisualizationResultRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, VisualizationResult] = {}
+
+    def save(self, obj: VisualizationResult) -> VisualizationResult:
+        self._store[obj.visualization_result_id] = obj
+        return obj
+
+    def get(self, visualization_result_id: UUID) -> VisualizationResult | None:
+        return self._store.get(visualization_result_id)
+
+    def list_by_plan(self, visualization_plan_id: UUID) -> list[VisualizationResult]:
+        return [v for v in self._store.values() if v.visualization_plan_id == visualization_plan_id]

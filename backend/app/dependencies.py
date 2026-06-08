@@ -14,6 +14,8 @@ from app.repositories.memory import (
     FeaturePlanRepository,
     FeatureResultRepository,
     UploadedFileRepository,
+    VisualizationPlanRepository,
+    VisualizationResultRepository,
 )
 
 
@@ -31,6 +33,8 @@ class Repos:
     cleaning_result: CleaningResultRepository = field(default_factory=CleaningResultRepository)
     feature_plan: FeaturePlanRepository = field(default_factory=FeaturePlanRepository)
     feature_result: FeatureResultRepository = field(default_factory=FeatureResultRepository)
+    visualization_plan: VisualizationPlanRepository = field(default_factory=VisualizationPlanRepository)
+    visualization_result: VisualizationResultRepository = field(default_factory=VisualizationResultRepository)
 
 
 _repos = Repos()

@@ -60,13 +60,47 @@ ai-data-analyst/
   docker-compose.yml
 ```
 
+## Database Setup
+
+### Start PostgreSQL
+
+```bash
+docker compose up -d db
+# or with a local Postgres install:
+# createdb ai_data_analyst
+```
+
+`docker-compose.yml` starts a PostgreSQL container on port 5432 with:
+- user: `postgres`, password: `postgres`, database: `ai_data_analyst`
+
+Set `DATABASE_URL` in `backend/.env` to override the default:
+
+```
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ai_data_analyst
+```
+
+### Run Migrations
+
+```bash
+cd backend
+uv run alembic upgrade head
+```
+
+### Reset Local Database
+
+```bash
+cd backend
+uv run alembic downgrade base   # drops all tables
+uv run alembic upgrade head     # recreates them
+```
+
 ## Run Backend
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-uvicorn app.main:app --reload
+uv sync
+# start PostgreSQL first (see Database Setup above)
+uv run uvicorn app.main:app --reload
 # → http://localhost:8000/health
 ```
 
@@ -74,7 +108,16 @@ uvicorn app.main:app --reload
 
 ```bash
 cd backend
-pytest
+uv run pytest
+# repository tests use SQLite in-memory; no PostgreSQL needed
+```
+
+## Lint and Format
+
+```bash
+cd backend
+uv run ruff check .
+uv run ruff format .
 ```
 
 ## Run Frontend

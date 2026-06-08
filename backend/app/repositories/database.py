@@ -8,20 +8,24 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    CleaningDecisionsModel,
     CleaningPlanModel,
     CleaningResultModel,
     ContextDocumentModel,
     DataProfileModel,
-    DataSourceModel,
     DatasetModel,
     DatasetSourceModel,
     DatasetTableModel,
     DatasetVersionModel,
+    DataSourceModel,
+    FeatureDecisionsModel,
     FeaturePlanModel,
     FeatureResultModel,
     UploadedFileModel,
 )
 from app.schemas.cleaning import (
+    CleaningDecisions,
+    CleaningDecisionsJson,
     CleaningExecutionLogJson,
     CleaningPlan,
     CleaningPlanJson,
@@ -31,6 +35,8 @@ from app.schemas.common import ApprovalStatus, ExecutionStatus
 from app.schemas.context_document import ContextDocument
 from app.schemas.dataset import Dataset, DatasetSource, DatasetTable, DatasetVersion
 from app.schemas.features import (
+    FeatureDecisions,
+    FeatureDecisionsJson,
     FeatureExecutionLogJson,
     FeaturePlan,
     FeaturePlanJson,
@@ -38,7 +44,6 @@ from app.schemas.features import (
 )
 from app.schemas.profile import ColumnProfile, DataProfile, DataQualityIssue
 from app.schemas.source import DataSource, UploadedFile
-
 
 # --- ORM → Pydantic converters ---
 
@@ -608,3 +613,84 @@ class FeatureResultRepository:
             .all()
         )
         return [_feature_result_from_orm(r) for r in rows]
+
+
+# --- Decisions repositories (add-on to M7B) ---
+
+
+def _cleaning_decisions_from_orm(row: CleaningDecisionsModel) -> CleaningDecisions:
+    return CleaningDecisions(
+        cleaning_decisions_id=row.cleaning_decisions_id,
+        cleaning_plan_id=row.cleaning_plan_id,
+        decided_by_user_id=row.decided_by_user_id,
+        decisions_json=CleaningDecisionsJson.model_validate(row.decisions_json or {}),
+        created_at=row.created_at,
+    )
+
+
+class CleaningDecisionsRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, obj: CleaningDecisions) -> CleaningDecisions:
+        row = CleaningDecisionsModel(
+            cleaning_decisions_id=obj.cleaning_decisions_id,
+            cleaning_plan_id=obj.cleaning_plan_id,
+            decided_by_user_id=obj.decided_by_user_id,
+            decisions_json=obj.decisions_json.model_dump(mode="json"),
+            created_at=obj.created_at,
+        )
+        merged = self._session.merge(row)
+        self._session.commit()
+        return _cleaning_decisions_from_orm(merged)
+
+    def get(self, cleaning_decisions_id: UUID) -> CleaningDecisions | None:
+        row = self._session.get(CleaningDecisionsModel, cleaning_decisions_id)
+        return _cleaning_decisions_from_orm(row) if row else None
+
+    def list_by_plan(self, cleaning_plan_id: UUID) -> list[CleaningDecisions]:
+        rows = (
+            self._session.query(CleaningDecisionsModel)
+            .filter(CleaningDecisionsModel.cleaning_plan_id == cleaning_plan_id)
+            .all()
+        )
+        return [_cleaning_decisions_from_orm(r) for r in rows]
+
+
+def _feature_decisions_from_orm(row: FeatureDecisionsModel) -> FeatureDecisions:
+    return FeatureDecisions(
+        feature_decisions_id=row.feature_decisions_id,
+        feature_plan_id=row.feature_plan_id,
+        decided_by_user_id=row.decided_by_user_id,
+        decisions_json=FeatureDecisionsJson.model_validate(row.decisions_json or {}),
+        created_at=row.created_at,
+    )
+
+
+class FeatureDecisionsRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, obj: FeatureDecisions) -> FeatureDecisions:
+        row = FeatureDecisionsModel(
+            feature_decisions_id=obj.feature_decisions_id,
+            feature_plan_id=obj.feature_plan_id,
+            decided_by_user_id=obj.decided_by_user_id,
+            decisions_json=obj.decisions_json.model_dump(mode="json"),
+            created_at=obj.created_at,
+        )
+        merged = self._session.merge(row)
+        self._session.commit()
+        return _feature_decisions_from_orm(merged)
+
+    def get(self, feature_decisions_id: UUID) -> FeatureDecisions | None:
+        row = self._session.get(FeatureDecisionsModel, feature_decisions_id)
+        return _feature_decisions_from_orm(row) if row else None
+
+    def list_by_plan(self, feature_plan_id: UUID) -> list[FeatureDecisions]:
+        rows = (
+            self._session.query(FeatureDecisionsModel)
+            .filter(FeatureDecisionsModel.feature_plan_id == feature_plan_id)
+            .all()
+        )
+        return [_feature_decisions_from_orm(r) for r in rows]

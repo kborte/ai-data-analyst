@@ -1,0 +1,5 @@
+Company: Acme Corp
+Revenue target: $1,000,000 for Q1 2024
+Key products: Widget A, Widget B, Widget C
+Primary metric: monthly recurring revenue (MRR)
+Growth goal: 10% MoM

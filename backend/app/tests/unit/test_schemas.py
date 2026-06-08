@@ -351,7 +351,7 @@ def test_feature_plan_schema() -> None:
                     feature_id=feature_id,
                     feature_name="running_revenue",
                     description="Cumulative sum of revenue ordered by date",
-                    operation_type=FeatureOperationType.cumulative_sum,
+                    operation_type=FeatureOperationType.window,
                     formula_display="cumsum(revenue ORDER BY date)",
                     required_columns=["revenue", "date"],
                     sort_columns=["date"],

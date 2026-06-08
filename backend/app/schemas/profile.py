@@ -34,6 +34,10 @@ class ColumnProfile(BaseModel):
     top_values: list[Any] = []
     numeric_summary: NumericSummary | None = None
     date_summary: DateSummary | None = None
+    is_likely_id: bool = False
+    is_likely_metric: bool = False
+    is_likely_categorical: bool = False
+    is_likely_date: bool = False
 
 
 class DataQualityIssue(BaseModel):
@@ -55,5 +59,9 @@ class DataProfile(BaseModel):
     column_count: int
     column_profiles: list[ColumnProfile]
     quality_issues: list[DataQualityIssue] = []
+    likely_id_columns: list[str] = []
+    likely_metric_columns: list[str] = []
+    likely_categorical_columns: list[str] = []
+    likely_date_columns: list[str] = []
     created_at: datetime
     metadata: dict[str, Any] = {}

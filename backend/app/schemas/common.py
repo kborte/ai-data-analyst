@@ -59,6 +59,7 @@ class DataType(StrEnum):
     boolean = "boolean"
     date = "date"
     datetime = "datetime"
+    categorical = "categorical"
     unknown = "unknown"
 
 
@@ -96,6 +97,10 @@ class IssueType(StrEnum):
     invalid_value = "invalid_value"
     whitespace = "whitespace"
     encoding_error = "encoding_error"
+    numeric_stored_as_text = "numeric_stored_as_text"
+    date_stored_as_text = "date_stored_as_text"
+    high_cardinality_category = "high_cardinality_category"
+    mixed_types = "mixed_types"
 
 
 class CleaningOperationType(StrEnum):
@@ -109,18 +114,19 @@ class CleaningOperationType(StrEnum):
     rename_column = "rename_column"
     deduplicate = "deduplicate"
     clip_outlier = "clip_outlier"
+    ignore_issue = "ignore_issue"
+    parse_dates = "parse_dates"
 
 
 class FeatureOperationType(StrEnum):
     ratio = "ratio"
-    cumulative_sum = "cumulative_sum"
-    grouped_cumulative_sum = "grouped_cumulative_sum"
-    rolling_mean = "rolling_mean"
-    period_over_period_change = "period_over_period_change"
-    count_distinct = "count_distinct"
-    conditional_rate = "conditional_rate"
-    date_part = "date_part"
+    arithmetic = "arithmetic"
+    aggregate = "aggregate"
+    window = "window"
+    period_change = "period_change"
+    date_extract = "date_extract"
     bucketize = "bucketize"
+    custom_formula = "custom_formula"
 
 
 class ChartType(StrEnum):

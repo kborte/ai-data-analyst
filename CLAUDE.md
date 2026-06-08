@@ -417,3 +417,13 @@ After editing files, summarize:
 * tests added
 * commands to run
 * assumptions/limitations
+
+## Token discipline
+
+- Do not review the whole codebase unless explicitly asked.
+- Read only files needed for the current task.
+- Do not print full file contents unless asked.
+- Keep plans to max 5 bullets.
+- Keep summaries to max 8 bullets.
+- Do not restate requirements already present in milestone files.
+- Prefer small incremental edits over broad rewrites.

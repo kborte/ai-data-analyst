@@ -10,15 +10,20 @@ from app.schemas.common import ArtifactStatus, ExecutionStatus, FeatureOperation
 class FeatureDefinition(BaseModel):
     feature_id: UUID
     feature_name: str
-    description: str
+    display_name: str = ""
+    description: str = ""
     operation_type: FeatureOperationType
     formula_display: str
+    input_table: str = ""
+    output_table: str | None = None
+    output_column: str | None = None
     required_columns: list[str]
     grouping_columns: list[str] = []
     sort_columns: list[str] = []
     reset_period: str | None = None
     assumptions: list[str] = []
     parameters: dict[str, Any] = {}
+    requires_human_approval: bool = True
 
 
 class FeaturePlanJson(BaseModel):

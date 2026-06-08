@@ -76,7 +76,23 @@ class CleaningStep(BaseModel):
     preview: CleaningPreview
 
 
+class CleaningPlanSummary(BaseModel):
+    total_steps: int
+    steps_requiring_approval: int
+    auto_approved_steps: int
+    auto_ignored_steps: int
+    estimated_row_count_change: int
+    estimated_columns_changed: list[str] = []
+
+
 class CleaningPlanJson(BaseModel):
+    schema_version: str = "1.0"
+    plan_id: UUID | None = None
+    dataset_version_id: UUID | None = None
+    profile_id: UUID | None = None
+    created_at: datetime | None = None
+    summary: CleaningPlanSummary | None = None
+    global_assumptions: list[str] = []
     steps: list[CleaningStep]
 
 
@@ -133,7 +149,26 @@ class CleaningStepResult(BaseModel):
     warnings: list[str] = []
 
 
+class CleaningExecutionSummary(BaseModel):
+    total_steps: int
+    executed_steps: int
+    skipped_steps: int
+    failed_steps: int
+    rows_before: int
+    rows_after: int
+    rows_removed: int
+    columns_changed: list[str] = []
+
+
 class CleaningExecutionLogJson(BaseModel):
+    schema_version: str = "1.0"
+    cleaning_run_id: UUID | None = None
+    cleaning_plan_id: UUID | None = None
+    input_dataset_version_id: UUID | None = None
+    output_dataset_version_id: UUID | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    summary: CleaningExecutionSummary | None = None
     step_results: list[CleaningStepResult]
     warnings: list[str] = []
     errors: list[str] = []

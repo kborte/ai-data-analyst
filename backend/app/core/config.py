@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     ENV: str = "development"
     STORAGE_BACKEND: str = "local"
     LOCAL_STORAGE_DIR: str = "storage/uploads"
+    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/ai_data_analyst"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

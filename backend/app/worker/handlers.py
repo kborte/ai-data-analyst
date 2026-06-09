@@ -42,6 +42,7 @@ def handle_execute_cleaning(job: Job, repos: Any, storage: Any, llm: Any) -> dic
         repos.dataset_table,
         repos.cleaning_plan,
         repos.cleaning_result,
+        storage,
     )
     result = service.execute_cleaning_plan(
         workspace_id=job.workspace_id,
@@ -129,6 +130,7 @@ def handle_execute_features(job: Job, repos: Any, storage: Any, llm: Any) -> dic
         repos.feature_plan,
         repos.feature_result,
         llm,
+        storage,
     )
     result = service.execute_feature_plan(
         workspace_id=job.workspace_id,

@@ -2,10 +2,11 @@
 CleaningExecutionService: resolves decisions, executes cleaning, creates cleaned DatasetVersion.
 
 No LLM calls. No in-place mutation of original data.
+Uses DuckDB + StorageBackend (M9+). Reads from the version's .duckdb artifact,
+writes a new .duckdb artifact for the cleaned version.
 """
 
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID, uuid4
 
 import pandas as pd
@@ -27,21 +28,8 @@ from app.schemas.common import ArtifactStatus, DatasetVersionType, ExecutionStat
 from app.schemas.dataset import DatasetTable, DatasetVersion
 from app.tools.data.cleaning_decision_resolver import resolve_decisions
 from app.tools.data.cleaning_executor import ExecutionResult, StepExecutionResult, execute_cleaning
-from app.tools.files.storage import save_cleaned_table
-
-_EXCEL_EXTS = {".xlsx", ".xls"}
-
-
-def _load_df(storage_path: str, table_name: str) -> pd.DataFrame:
-    p = Path(storage_path)
-    if not p.exists():
-        raise FileNotFoundError(f"Storage file not found: {storage_path}")
-    ext = p.suffix.lower()
-    if ext == ".csv":
-        return pd.read_csv(p)
-    if ext in _EXCEL_EXTS:
-        return pd.read_excel(p, sheet_name=table_name, engine="openpyxl")
-    raise ValueError(f"Unsupported file type: {ext!r}")
+from app.tools.data.duckdb_service import create_version_duckdb, list_tables, temp_duckdb_path
+from app.tools.files.storage_service import StorageBackend, version_path
 
 
 def _next_version_number(dataset_id: UUID, version_repo: DatasetVersionRepository) -> int:
@@ -91,11 +79,13 @@ class CleaningExecutionService:
         table_repo: DatasetTableRepository,
         plan_repo: CleaningPlanRepository,
         result_repo: CleaningResultRepository,
+        storage: StorageBackend,
     ) -> None:
         self._versions = version_repo
         self._tables = table_repo
         self._plans = plan_repo
         self._results = result_repo
+        self._storage = storage
 
     def execute_cleaning_plan(
         self,
@@ -112,6 +102,8 @@ class CleaningExecutionService:
             raise ValueError(f"DatasetVersion {input_dataset_version_id} not found")
         if input_version.dataset_id != dataset_id:
             raise ValueError("DatasetVersion does not belong to given dataset")
+        if not input_version.storage_path:
+            raise ValueError(f"DatasetVersion {input_dataset_version_id} has no DuckDB artifact")
 
         # 2. Retrieve and validate plan
         plan = self._plans.get(cleaning_plan_id)
@@ -129,16 +121,20 @@ class CleaningExecutionService:
                 f"Execution blocked: {resolution.summary.blocked_steps} step(s) require approval"
             )
 
-        # 4. Load original tables
-        orig_tables_meta = self._tables.list_by_version(input_dataset_version_id)
-        if not orig_tables_meta:
-            raise ValueError(f"No tables found for version {input_dataset_version_id}")
-
+        # 4. Load all tables from the input version's .duckdb artifact
         tables: dict[str, pd.DataFrame] = {}
-        for tm in orig_tables_meta:
-            if not tm.storage_path:
-                raise ValueError(f"Table '{tm.table_name}' has no storage path")
-            tables[tm.table_name] = _load_df(tm.storage_path, tm.table_name)
+        with temp_duckdb_path() as tmp_in:
+            tmp_in.write_bytes(self._storage.read(input_version.storage_path))
+            import duckdb as _duckdb  # noqa: PLC0415
+            con = _duckdb.connect(str(tmp_in), read_only=True)
+            try:
+                for tname in list_tables(tmp_in):
+                    tables[tname] = con.execute(f'SELECT * FROM "{tname}"').df()  # noqa: S608
+            finally:
+                con.close()
+
+        if not tables:
+            raise ValueError(f"No tables found in version {input_dataset_version_id}")
 
         # 5. Execute cleaning
         exec_result = execute_cleaning(tables, resolution.resolutions)
@@ -165,15 +161,17 @@ class CleaningExecutionService:
             )
             return self._results.save(result)
 
-        # 6. Persist cleaned tables and create new version
-        out_version_id = uuid4()
-        for table_name, df in exec_result.tables.items():
-            csv_bytes = df.to_csv(index=False).encode()
-            save_cleaned_table(workspace_id, dataset_id, out_version_id, table_name, csv_bytes)
-
+        # 6. Write cleaned tables to a new .duckdb artifact and upload to storage
         total_rows = sum(len(df) for df in exec_result.tables.values())
         total_cols = max((len(df.columns) for df in exec_result.tables.values()), default=0)
         next_num = _next_version_number(dataset_id, self._versions)
+        out_version_id = uuid4()
+
+        ver_storage_path = version_path(workspace_id, dataset_id, next_num, "cleaned")
+        with temp_duckdb_path() as tmp_out:
+            create_version_duckdb(exec_result.tables, tmp_out)
+            duckdb_bytes = tmp_out.read_bytes()
+        stored = self._storage.save(ver_storage_path, duckdb_bytes)
 
         out_version = DatasetVersion(
             dataset_version_id=out_version_id,
@@ -183,6 +181,10 @@ class CleaningExecutionService:
             version_type=DatasetVersionType.cleaned,
             display_name="Cleaned data",
             description="Created by applying approved cleaning steps",
+            storage_backend=stored.storage_backend,
+            storage_bucket=stored.storage_bucket,
+            storage_path=ver_storage_path,
+            storage_format="duckdb",
             row_count=total_rows,
             column_count=total_cols,
             created_by_user_id=executed_by_user_id,
@@ -191,13 +193,11 @@ class CleaningExecutionService:
         self._versions.save(out_version)
 
         for table_name, df in exec_result.tables.items():
-            from app.tools.files.storage import build_cleaned_table_path
-            path = build_cleaned_table_path(workspace_id, dataset_id, out_version_id, table_name)
             self._tables.save(DatasetTable(
                 table_id=uuid4(),
                 dataset_version_id=out_version_id,
                 table_name=table_name,
-                storage_path=str(path),
+                storage_path=None,
                 row_count=len(df),
                 column_count=len(df.columns),
             ))

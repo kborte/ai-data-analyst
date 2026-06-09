@@ -29,13 +29,12 @@ from app.schemas.features import (
     FeaturePlanJson,
     FeatureResult,
 )
+from app.tools.data.duckdb_service import create_version_duckdb, list_tables, temp_duckdb_path
 from app.tools.data.feature_executor import execute_features
 from app.tools.data.feature_planner import generate_feature_suggestions
-from app.tools.files.storage import build_cleaned_table_path, save_cleaned_table
+from app.tools.files.storage_service import StorageBackend, version_path
 from app.tools.llm.prompts import FEATURE_SUGGEST_SCHEMA, feature_suggest_prompt
 from app.tools.llm.provider import FakeLLMProvider, LLMProvider
-
-_EXCEL_EXTS = {".xlsx", ".xls"}
 
 
 @dataclass
@@ -112,6 +111,7 @@ class FeatureService:
         plan_repo: FeaturePlanRepository,
         result_repo: FeatureResultRepository,
         llm: LLMProvider | None = None,
+        storage: StorageBackend | None = None,
     ) -> None:
         self._profiles = profile_repo
         self._versions = version_repo
@@ -119,6 +119,7 @@ class FeatureService:
         self._plans = plan_repo
         self._results = result_repo
         self._llm = llm or FakeLLMProvider()
+        self._storage = storage
 
     def create_feature_plan(self, profile_id: UUID, dataset_version_id: UUID) -> FeaturePlan:
         profile = self._profiles.get(profile_id)
@@ -181,6 +182,8 @@ class FeatureService:
         input_version = self._versions.get(input_dataset_version_id)
         if input_version is None:
             raise ValueError(f"DatasetVersion {input_dataset_version_id} not found")
+        if not input_version.storage_path:
+            raise ValueError(f"DatasetVersion {input_dataset_version_id} has no DuckDB artifact")
 
         decision_map = {d.feature_id: d for d in decisions.decisions_json.decisions}
         blocked = [
@@ -196,35 +199,47 @@ class FeatureService:
             and decision_map[f.feature_id].decision == UserDecision.approve
         ]
 
-        table_metas = self._tables.list_by_version(input_dataset_version_id)
-        if not table_metas:
-            raise ValueError(f"No tables found for version {input_dataset_version_id}")
-
+        # Load tables from the input version's .duckdb artifact
+        if self._storage is None:
+            raise ValueError("FeatureService requires a storage backend for execution")
         tables: dict[str, pd.DataFrame] = {}
-        for tm in table_metas:
-            if not tm.storage_path:
-                raise ValueError(f"Table '{tm.table_name}' has no storage path")
-            tables[tm.table_name] = _load_df(tm.storage_path)
+        with temp_duckdb_path() as tmp_in:
+            tmp_in.write_bytes(self._storage.read(input_version.storage_path))
+            import duckdb as _duckdb  # noqa: PLC0415
+            con = _duckdb.connect(str(tmp_in), read_only=True)
+            try:
+                for tname in list_tables(tmp_in):
+                    tables[tname] = con.execute(f'SELECT * FROM "{tname}"').df()  # noqa: S608
+            finally:
+                con.close()
+
+        if not tables:
+            raise ValueError(f"No tables found in version {input_dataset_version_id}")
 
         exec_result = execute_features(tables, approved_features)
         completed_at = datetime.now(tz=UTC)
 
+        # Write enriched tables to a new .duckdb artifact
         out_version_id = uuid4()
         all_out_tables = {**exec_result.tables, **exec_result.new_tables}
+        next_num = _next_version_number(dataset_id, self._versions)
+
+        ver_storage_path = version_path(workspace_id, dataset_id, next_num, "enriched")
+        with temp_duckdb_path() as tmp_out:
+            create_version_duckdb(all_out_tables, tmp_out)
+            duckdb_bytes = tmp_out.read_bytes()
+        stored = self._storage.save(ver_storage_path, duckdb_bytes)
+
         for table_name, df in all_out_tables.items():
-            csv_bytes = df.to_csv(index=False).encode()
-            save_cleaned_table(workspace_id, dataset_id, out_version_id, table_name, csv_bytes)
-            path = build_cleaned_table_path(workspace_id, dataset_id, out_version_id, table_name)
             self._tables.save(DatasetTable(
                 table_id=uuid4(),
                 dataset_version_id=out_version_id,
                 table_name=table_name,
-                storage_path=str(path),
+                storage_path=None,
                 row_count=len(df),
                 column_count=len(df.columns),
             ))
 
-        next_num = _next_version_number(dataset_id, self._versions)
         out_version = DatasetVersion(
             dataset_version_id=out_version_id,
             dataset_id=dataset_id,
@@ -233,6 +248,10 @@ class FeatureService:
             version_type=DatasetVersionType.enriched,
             display_name="Enriched data",
             description="Created by applying approved feature definitions",
+            storage_backend=stored.storage_backend,
+            storage_bucket=stored.storage_bucket,
+            storage_path=ver_storage_path,
+            storage_format="duckdb",
             row_count=sum(len(df) for df in exec_result.tables.values()),
             column_count=max((len(df.columns) for df in exec_result.tables.values()), default=0),
             created_by_user_id=executed_by_user_id,

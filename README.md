@@ -2,114 +2,178 @@
 
 A modular, human-in-the-loop AI-assisted data analysis application.
 
-## Purpose
-
-Users upload CSV/Excel datasets and text context, then walk through a structured workflow:
-profile → clean → enrich → visualize → interpret. Every step produces inspectable artifacts.
-LLMs suggest; humans decide; deterministic executors act.
-
-## Repo Structure
-
-```
-ai-data-analyst/
-  backend/
-    app/
-      main.py            # FastAPI entrypoint
-      core/              # config, logging
-      api/routes/        # HTTP route handlers
-      schemas/           # Pydantic schemas
-      services/          # Business logic orchestration
-      tools/             # File, data, chart, LLM tools
-        data/            # profiler, DuckDB utilities, feature/cleaning executors
-        files/           # storage abstraction, loaders, filename helpers
-        llm/             # LLM provider abstraction
-        charts/          # chart planner and executor
-      repositories/      # DB persistence (SQLAlchemy)
-      db/                # ORM models + Alembic migrations
-      tests/
-    pyproject.toml
-    .env.example         # copy to .env and fill in
-    alembic.ini
-  frontend/
-    app/page.tsx
-    package.json
-  milestones/            # milestone specs
-  docker-compose.yml
-```
-
-## Domain Model
-
-| Entity | Purpose |
-|---|---|
-| Workspace | Top-level container |
-| DataSource | Where data came from (upload, API, …) |
-| UploadedFile | Physical file metadata + raw storage path |
-| Dataset | Logical analysis unit (e.g. "May Revenue") |
-| DatasetVersion | Immutable snapshot; cleaning/enrichment always creates a new version |
-| DatasetTable | One table/sheet within a version; identified by name inside the version's `.duckdb` |
-| ContextDocument | Business context from uploaded text |
-| DataProfile | Statistical profile + quality issues per table |
-| CleaningPlan / Decisions / Result | Human-in-the-loop cleaning workflow |
-| FeaturePlan / Decisions / Result | Human-in-the-loop feature engineering |
-| VisualizationPlan / Result | Chart specs generated deterministically + optionally with LLM |
+Users upload messy business datasets, step through a structured analysis workflow, and receive inspectable, explainable outputs at every stage. LLMs propose; humans decide; deterministic code executes.
 
 ---
 
-## Storage Architecture
+## Features
+
+### Upload
+- Upload CSV or Excel files (multi-sheet supported)
+- Upload text context documents (`.txt`, `.md`) to ground analysis in business context
+- Each upload is saved as a raw artifact in storage and materialized as a `.duckdb` version file
+- Multiple files can be added to an existing dataset without creating a new dataset
+
+### Data Profiling
+- Automatic column-type detection (numeric, categorical, date, ID)
+- Per-column statistics: null rate, unique count, min/max/mean/median, top values
+- Quality issue detection: missing values, date-stored-as-text, type mismatches
+- Likely-metric, likely-ID, likely-categorical, and likely-date column classification
+
+### Cleaning — Human-in-the-Loop
+- Deterministic cleaning plan generated from profile quality issues
+- Each step carries an impact estimate (rows affected, columns changed)
+- High-impact steps enriched with LLM-generated rationale (one OpenAI call per plan)
+- Human approves, rejects, or modifies each step before execution
+- Cleaning executes deterministically; original dataset is never overwritten
+- A new `DatasetVersion` is created from each approved cleaning run
+
+### Feature Engineering — Human-in-the-Loop
+- Deterministic feature suggestions: ratios, rolling windows, date extraction, aggregations
+- LLM supplements with up to 4 additional feature ideas (validated against real column names)
+- Human approves or rejects each suggested feature
+- Approved features are executed deterministically and create a new `DatasetVersion`
+
+### Visualization
+- Deterministic chart suggestions from profile metadata (bar, line, scatter, histogram, pie)
+- LLM supplements with up to 3 additional chart ideas when deterministic output is sparse
+- Chart specs are validated against actual column names before being proposed
+- Human reviews and approves chart suggestions before rendering
+
+### Storage
+- Two storage backends: `local` (dev) and `supabase` (production)
+- Raw uploads and `.duckdb` version artifacts stored in the configured backend
+- DuckDB used only as a local scratch tool during request processing — no persistent local files in Supabase mode
+- Storage paths follow a predictable convention:
+  ```
+  raw uploads:  workspaces/{wid}/datasets/{did}/raw_uploads/{fid}_{filename}
+  versions:     workspaces/{wid}/datasets/{did}/versions/v{n}_{type}.duckdb
+  results:      workspaces/{wid}/datasets/{did}/results/{artifact_id}.{ext}
+  ```
+
+---
+
+## Project Structure
 
 ```
-Supabase Postgres  →  metadata, plans, decisions, jobs, lineage
-Supabase Storage   →  raw uploads, .duckdb version artifacts, result files
-DuckDB             →  analytical execution (temp local scratch files only)
+ai-data-analyst/
+├── backend/
+│   ├── app/
+│   │   ├── main.py                  # FastAPI app entrypoint
+│   │   ├── core/
+│   │   │   ├── config.py            # pydantic-settings, reads .env
+│   │   │   └── logging.py
+│   │   ├── api/routes/
+│   │   │   ├── uploads.py           # POST /workspaces/{id}/datasets/upload
+│   │   │   ├── profiles.py          # POST /datasets/{id}/versions/{id}/profile
+│   │   │   ├── cleaning.py          # cleaning plan + decisions + execution
+│   │   │   ├── features.py          # feature plan + decisions + execution
+│   │   │   ├── visualization.py     # visualization plan + decisions + generation
+│   │   │   └── health.py            # GET /health
+│   │   ├── services/
+│   │   │   ├── upload_service.py    # saves raw file + creates .duckdb version
+│   │   │   ├── profiling_service.py # reads .duckdb, runs profiler per table
+│   │   │   ├── cleaning_plan_service.py
+│   │   │   ├── cleaning_execution_service.py
+│   │   │   ├── feature_service.py
+│   │   │   └── visualization_service.py
+│   │   ├── tools/
+│   │   │   ├── data/
+│   │   │   │   ├── profiler.py          # column stats + quality issues
+│   │   │   │   ├── duckdb_service.py    # create/read/inspect .duckdb artifacts
+│   │   │   │   ├── cleaning_executor.py
+│   │   │   │   ├── feature_executor.py
+│   │   │   │   └── feature_planner.py
+│   │   │   ├── files/
+│   │   │   │   ├── storage_service.py   # StorageBackend protocol + Local/Supabase impls
+│   │   │   │   ├── csv_loader.py
+│   │   │   │   └── excel_loader.py
+│   │   │   ├── charts/
+│   │   │   │   ├── chart_planner.py
+│   │   │   │   └── chart_executor.py
+│   │   │   └── llm/
+│   │   │       ├── provider.py          # LLMProvider protocol + OpenAI/Fake impls
+│   │   │       └── prompts.py           # structured prompts for cleaning/feature/chart enrichment
+│   │   ├── repositories/
+│   │   │   ├── database.py          # SQLAlchemy-backed repositories
+│   │   │   └── memory.py            # in-memory repositories (tests/dev)
+│   │   ├── db/
+│   │   │   ├── models.py            # SQLAlchemy ORM models
+│   │   │   └── session.py
+│   │   ├── schemas/                 # Pydantic schemas for all domain entities
+│   │   └── tests/
+│   │       ├── fixtures/            # simple_sales.csv, company_context.txt
+│   │       └── unit/                # 299 pytest tests
+│   ├── alembic/                     # DB migration scripts
+│   ├── pyproject.toml
+│   ├── .env.example                 # copy to .env and fill in
+│   └── alembic.ini
+├── frontend/
+│   └── app/
+│       ├── page.tsx                 # workflow overview + navigation
+│       ├── cleaning-plan/page.tsx   # cleaning review UI
+│       ├── metrics-plan/page.tsx    # feature engineering review UI
+│       ├── charts-preview/page.tsx  # visualization review UI
+│       └── components/              # CleaningReviewFlow, MetricsReviewFlow, ChartReviewFlow
+├── milestones/                      # milestone specification docs
+├── docker-compose.yml               # local PostgreSQL
+└── README.md
 ```
 
-**Persistent files always live in storage (local or Supabase), never on the backend server's disk.**
-Temp local `.duckdb` scratch files are created during a single request and deleted immediately after — they are not persisted.
+---
 
-Storage paths follow this convention:
+## API Overview
 
-```
-raw uploads:
-  workspaces/{workspace_id}/datasets/{dataset_id}/raw_uploads/{file_id}_{filename}
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `POST` | `/workspaces/{wid}/datasets/upload` | Upload CSV/Excel, create dataset + version |
+| `POST` | `/workspaces/{wid}/context-documents/upload` | Upload text context |
+| `POST` | `/datasets/{did}/versions/{vid}/profile` | Profile all tables in a version |
+| `GET` | `/profiles/{pid}` | Fetch a profile |
+| `POST` | `/datasets/{did}/versions/{vid}/cleaning-plans` | Generate cleaning plan |
+| `GET` | `/cleaning-plans/{cid}` | Fetch a cleaning plan |
+| `POST` | `/cleaning-plans/{cid}/decisions/validate` | Submit human decisions |
+| `POST` | `/cleaning-plans/{cid}/execute` | Execute approved cleaning steps |
+| `GET` | `/cleaning-results/{rid}` | Fetch cleaning result |
+| `POST` | `/datasets/{did}/versions/{vid}/feature-plans` | Generate feature plan |
+| `POST` | `/feature-plans/{fid}/decisions/validate` | Submit feature decisions |
+| `POST` | `/feature-plans/{fid}/execute` | Execute approved features |
+| `POST` | `/datasets/{did}/versions/{vid}/visualization-plans` | Generate visualization plan |
+| `POST` | `/visualization-plans/{vid}/decisions/validate` | Submit chart decisions |
+| `POST` | `/visualization-plans/{vid}/generate` | Generate chart data |
 
-dataset versions:
-  workspaces/{workspace_id}/datasets/{dataset_id}/versions/v{n}_{type}.duckdb
-
-result artifacts:
-  workspaces/{workspace_id}/datasets/{dataset_id}/results/{artifact_id}.{ext}
-```
+Interactive docs at `http://localhost:8000/docs` when the backend is running.
 
 ---
 
 ## Environment Variables
 
-Copy `backend/.env.example` to `backend/.env` and fill in the required values.
+Copy `backend/.env.example` to `backend/.env` and fill in:
 
 | Variable | Required | Description |
 |---|---|---|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `STORAGE_BACKEND` | Yes | `local` (dev) or `supabase` (production) |
-| `LOCAL_STORAGE_DIR` | Local only | Directory for local storage files (default: `storage/uploads`) |
-| `OPENAI_API_KEY` | For LLM enrichment | OpenAI API key; leave blank to use deterministic-only mode |
-| `LLM_MODEL` | No | OpenAI model name (default: `gpt-4o-mini`) |
+| `LOCAL_STORAGE_DIR` | Local only | Root dir for local storage (default: `storage/uploads`) |
+| `OPENAI_API_KEY` | Optional | If set, enables LLM enrichment of plans; blank → deterministic-only |
+| `LLM_MODEL` | No | OpenAI model (default: `gpt-4o-mini`) |
 | `SUPABASE_URL` | Supabase mode | `https://<project-ref>.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase mode | Service role key (not the anon key) — bypasses RLS |
-| `SUPABASE_STORAGE_BUCKET` | Supabase mode | Storage bucket name (default: `ai-data-analyst`) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase mode | Service role key (not the anon key) |
+| `SUPABASE_STORAGE_BUCKET` | Supabase mode | Bucket name (default: `ai-data-analyst`) |
 | `STORAGE_TEMP_DIR` | No | Temp dir for DuckDB scratch files (default: `/tmp/ai_data_analyst`) |
 
 ---
 
 ## Database Setup
 
-### Option A — Local PostgreSQL (dev)
+### Option A — Local PostgreSQL
 
 ```bash
 docker compose up -d db
 ```
 
-`docker-compose.yml` starts PostgreSQL on port 5432 with user `postgres`, password `postgres`, database `ai_data_analyst`.
-
-Set in `backend/.env`:
+Starts PostgreSQL on port 5432: user `postgres`, password `postgres`, database `ai_data_analyst`.
 
 ```
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ai_data_analyst
@@ -117,11 +181,12 @@ STORAGE_BACKEND=local
 LOCAL_STORAGE_DIR=storage/uploads
 ```
 
-### Option B — Supabase Postgres (production / shared dev)
+### Option B — Supabase
 
 1. Create a project at [supabase.com](https://supabase.com).
 2. Go to **Settings → Database → Connection string** and copy the **Transaction pooler** URI (port 6543).
-3. Set in `backend/.env`:
+3. Go to **Storage**, create a private bucket named `ai-data-analyst`.
+4. Set in `.env`:
 
 ```
 DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres
@@ -131,66 +196,67 @@ SUPABASE_SERVICE_ROLE_KEY=sb_secret_...
 SUPABASE_STORAGE_BUCKET=ai-data-analyst
 ```
 
-> **Use the service role key, not the anon key.** The anon key is subject to RLS and will return 403 on storage writes.
+> Use the **service role key**, not the anon key — the anon key returns 403 on storage writes.
 
 ### Run Migrations
 
 ```bash
 cd backend
 .venv/bin/alembic upgrade head
-# or: uv run alembic upgrade head
-```
-
-### Reset Local Database
-
-```bash
-cd backend
-.venv/bin/alembic downgrade base
-.venv/bin/alembic upgrade head
 ```
 
 ---
 
-## Supabase Storage Setup
-
-1. In the Supabase Dashboard go to **Storage**.
-2. Create a new bucket named `ai-data-analyst` (or whatever you set in `SUPABASE_STORAGE_BUCKET`).
-3. Set the bucket to **private** — the backend uses the service role key and does not require public URLs.
-
-The backend will automatically create folders inside the bucket using the path convention above. No manual folder setup is required.
-
----
-
-## Local Dev Storage Mode
-
-Set `STORAGE_BACKEND=local` and `LOCAL_STORAGE_DIR=storage/uploads` in `backend/.env`.
-
-Files are written under `backend/storage/uploads/`. This directory is gitignored.
-
-**Tests always use a temporary directory** injected via `LocalStorageBackend(tmp_path)` — they never write to the real `LOCAL_STORAGE_DIR` and do not need Supabase credentials.
-
----
-
-## Run Backend
+## Running the Backend
 
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-# start PostgreSQL (local or Supabase connection string in .env)
+
+# make sure DATABASE_URL is set in .env
 uvicorn app.main:app --reload
 # → http://localhost:8000/health
+# → http://localhost:8000/docs  (interactive API explorer)
 ```
 
 ---
 
-## Run Tests
+## Running the Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+# → http://localhost:3000
+```
+
+The frontend connects to the backend at `http://localhost:8000` by default.
+
+---
+
+## Running Tests
 
 ```bash
 cd backend
 pytest
-# Tests use LocalStorageBackend(tmp_path) — no Supabase credentials needed.
-# DB repo tests use SQLite in-memory — no PostgreSQL needed.
+```
+
+Tests use:
+- `LocalStorageBackend(tmp_path)` — no Supabase credentials needed
+- SQLite in-memory for DB repository tests — no PostgreSQL needed
+- `FakeLLMProvider` — no OpenAI key needed
+
+Run a specific test file:
+
+```bash
+pytest app/tests/unit/test_upload_routes.py -v
+```
+
+Run with coverage:
+
+```bash
+pytest --tb=short -q
 ```
 
 ---
@@ -201,15 +267,4 @@ pytest
 cd backend
 ruff check app/
 ruff format app/
-```
-
----
-
-## Run Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-# → http://localhost:3000
 ```

@@ -9,6 +9,7 @@ Design rules:
 
 from typing import Any
 
+from app.schemas.analytics_context import DatasetContext
 from app.schemas.cleaning import CleaningStep
 from app.schemas.profile import DataProfile
 
@@ -174,4 +175,72 @@ def chart_suggest_prompt(profile: DataProfile, existing_titles: list[str]) -> st
         "Suggest up to 3 additional charts for patterns not already covered. "
         "Only use columns that exist in the table. "
         "Return empty array if existing charts are sufficient."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Analytics planner: classify intent and select tool spec from context
+# ---------------------------------------------------------------------------
+
+ANALYTICS_PLANNER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "intent": {
+            "type": "string",
+            "enum": [
+                "text_answer", "table_result", "visual_result",
+                "mixed_result", "save_table_result", "save_visual_result", "unsupported",
+            ],
+        },
+        "table_name": {"type": "string"},
+        "group_by": {"type": "array", "items": {"type": "string"}},
+        "metric_column": {"type": "string"},
+        "aggregation": {
+            "type": "string",
+            "enum": ["count", "sum", "avg", "min", "max", "median"],
+        },
+        "filter_column": {"type": "string"},
+        "filter_value": {},
+        "x_column": {"type": "string"},
+        "y_column": {"type": "string"},
+        "chart_type": {
+            "type": "string",
+            "enum": ["bar", "line", "pie", "scatter", "histogram", "area"],
+        },
+        "suggested_title": {"type": "string"},
+        "reasoning_summary": {"type": "string"},
+    },
+    "required": ["intent", "table_name", "suggested_title", "reasoning_summary"],
+}
+
+
+def analytics_planner_prompt(question: str, context: DatasetContext) -> str:
+    table_lines: list[str] = []
+    for t in context.tables:
+        col_parts = []
+        for c in t.columns:
+            roles = []
+            if c.is_likely_metric:
+                roles.append("metric")
+            if c.is_likely_date:
+                roles.append("date")
+            if c.is_likely_categorical:
+                roles.append("categorical")
+            if c.is_likely_id:
+                roles.append("id")
+            role_str = "/".join(roles) if roles else "other"
+            col_parts.append(f"    {c.column_name} ({c.data_type}, {role_str})")
+        rows_info = f"{t.row_count} rows" if t.row_count is not None else "unknown rows"
+        table_lines.append(f"  Table: {t.table_name} ({rows_info})\n" + "\n".join(col_parts))
+
+    tables_block = "\n".join(table_lines) if table_lines else "  (no tables available)"
+
+    return (
+        f"Dataset: {context.dataset_name}\n"
+        f"Tables:\n{tables_block}\n\n"
+        f"User question: {question}\n\n"
+        "Classify the question and select the best analytics tool. "
+        "Use only table names and column names listed above. "
+        "Do not produce SQL. "
+        "If the question cannot be answered with the available tables/columns, set intent to 'unsupported'."
     )

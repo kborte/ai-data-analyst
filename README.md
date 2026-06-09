@@ -330,3 +330,120 @@ All four helpers require the caller to pass `workspace_id`, `dataset_id`, and `d
 - PNG server-side generation — PNG download is a client-side feature
 - Supabase Auth
 - LLM calls
+
+---
+
+## Dataset Analytics Planner (M12)
+
+### What M12 is
+
+M12 implements a **lightweight analytics planner** for asking data questions over a selected `DatasetVersion`. It is **not** a full chat system. There are no conversation records, no server-side chat history, and no persistent memory.
+
+The full pipeline for a single request:
+
+1. Route receives `question`, optional `recent_messages`, optional `prior_output_refs`, `dataset_id`, `dataset_version_id`.
+2. Service builds a compact **dataset context** (tables, columns, types, row counts, profile summaries).
+3. **Planner** classifies the question into a structured `AnalyticsPlan` with an intent and a validated tool spec.
+4. A **deterministic tool** executes the plan against the DuckDB-backed dataset version.
+5. Route returns a typed output: `text`, `table`, `visual`, or `mixed`.
+6. Large table outputs are stored as file artifacts; small outputs are returned inline.
+7. The user may explicitly save a useful output as a `SavedView` or `SavedVisual`.
+
+### Lightweight multi-turn support
+
+Follow-up questions (e.g. "now show that as a chart", "save this") are supported only through **client-provided context**:
+
+- `recent_messages` — the client passes its own message history for the current session; each assistant message may carry `output_refs` (references to prior table/visual outputs).
+- `prior_output_refs` — the client passes explicit references to outputs it wants to act on.
+
+The backend **does not persist** these messages. They are consumed within the current request and discarded. Durable conversation storage belongs to a later milestone.
+
+### Outputs are scoped to the selected dataset version
+
+Every output (`TextOutput`, `TableOutput`, `VisualOutput`, `MixedOutput`) carries a `dataset_version_id` that matches the version the question was asked against. Saving an output preserves that version reference — a `SavedView` or `SavedVisual` always records which version it came from.
+
+### Planner contract
+
+The planner produces a structured `AnalyticsPlan`, not executable code. Supported intents:
+
+| Intent | Description |
+|---|---|
+| `text_answer` | Direct explanation, summary, or interpretation |
+| `table_result` | Aggregation, filter, ranking, or join |
+| `visual_result` | Chart — bar, line, pie, scatter |
+| `mixed_result` | Short explanation plus table and/or visual |
+| `save_table_result` | Explicit save of a prior table output |
+| `save_visual_result` | Explicit save of a prior visual output |
+| `unsupported` | Request is outside the supported tool scope |
+
+The planner selects from typed tool specs (`PreviewTableSpec`, `AggregateTableSpec`, `FilterTableSpec`, `SimpleJoinSpec`, `GenerateVisualSpec`). **No raw SQL is produced by the planner or LLM.** All tool specs are validated before execution.
+
+### Deterministic tools execute validated specs
+
+All data operations run through deterministic tools in `app/tools/analytics/query_tools.py`:
+
+| Tool | Operation |
+|---|---|
+| `run_preview_table` | Preview selected columns from a table |
+| `run_aggregate_table` | Group-by with metric aggregations |
+| `run_filter_table` | Row filtering with validated filter specs |
+| `run_simple_join` | Validated join between two known tables |
+| `run_generate_visual` | Chart spec generation via existing visualization utilities |
+
+All tools:
+- validate table names against the live DuckDB file
+- validate column names against the actual DataFrame
+- enforce row limits
+- operate in read-only mode (no dataset mutation)
+- return typed outputs with `dataset_version_id` preserved
+
+### Arbitrary raw SQL is not supported
+
+Users cannot submit raw SQL queries. The planner produces validated structural specs; deterministic Python code (pandas operations) executes them. This prevents injection and keeps execution auditable.
+
+### Generated outputs are not automatically saved
+
+Asking a question never creates a `SavedView` or `SavedVisual`. Outputs are ephemeral unless the user explicitly saves them:
+
+- `POST /analytics/table-results/save-as-view` — save a table output as a `SavedView`
+- `POST /analytics/visual-results/save-as-visual` — save a visual output as a `SavedVisual`
+
+Both routes delegate to the M11 explicit-save helpers.
+
+### Large outputs are stored as artifacts
+
+Table outputs exceeding `INLINE_LIMIT` (500) rows are written as CSV artifacts to the configured storage backend. The `TableOutput` schema carries `storage_path`, `storage_backend`, and `storage_format` when an artifact exists. Small outputs are returned inline in `preview_rows` with the full `row_count` available.
+
+Storage path pattern for result artifacts:
+
+```
+workspaces/{workspace_id}/datasets/{dataset_id}/results/{artifact_id}.csv
+```
+
+### Saved views and visuals use M11 helpers
+
+When the user saves an output, the analytics routes call the service-layer helpers from M11 (`app/services/saved_artifacts.py`):
+
+- `save_view_from_table_result` — uploads CSV to storage, persists `SavedView` metadata
+- `save_view_from_storage_artifact` — points `SavedView` at an existing artifact
+- `save_visual_from_chart_spec` — persists `SavedVisual` with chart spec JSON
+
+All helpers require explicit `workspace_id`, `dataset_id`, and `dataset_version_id` from the caller.
+
+### API routes
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/datasets/{dataset_id}/versions/{dataset_version_id}/analytics/ask` | Ask an analytics question; returns typed output |
+| `POST` | `/analytics/table-results/save-as-view` | Explicitly save a table result as a SavedView |
+| `POST` | `/analytics/visual-results/save-as-visual` | Explicitly save a visual result as a SavedVisual |
+
+### What is intentionally not in scope for M12
+
+- Durable conversation persistence and chat history (M13)
+- Dataset activity timeline
+- Full autonomous agent loops
+- Dynamic dashboards
+- Arbitrary raw SQL from users or LLMs
+- Cleaning or feature engineering execution
+- Production transaction hardening (M13)

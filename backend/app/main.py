@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.routes.analytics import router as analytics_router
 from app.api.routes.cleaning import router as cleaning_router
 from app.api.routes.saved_views import router as saved_views_router
 from app.api.routes.saved_visuals import router as saved_visuals_router
@@ -25,3 +26,4 @@ app.include_router(visualization_router)
 app.include_router(jobs_router)
 app.include_router(saved_views_router)
 app.include_router(saved_visuals_router)
+app.include_router(analytics_router)

@@ -1,429 +1,616 @@
-Create Milestone 1 for this project.
+# CLAUDE.md
 
-Read and follow `CLAUDE.md` first. Do not proceed beyond Milestone 1.
+## Project
 
-## Goal
+This project is an agentic AI data analyst app.
 
-Create the initial repo skeleton and core Pydantic schemas for an agentic AI data analyst app.
+The app helps users upload messy business datasets, understand data quality issues, approve safe cleaning/feature suggestions, ask dataset-scoped analytical questions, generate reusable views/visuals, and preserve intermediate dataset versions.
 
-For this milestone, build only:
+Use a staged milestone approach. Implement only the milestone section explicitly requested.
 
-1. clean repository structure
-2. backend FastAPI health endpoint
-3. core Pydantic schemas
-4. minimal frontend placeholder
-5. pytest/ruff setup
-6. basic tests for health endpoint and schema construction
-7. README files if useful
+---
 
-Do not implement file upload, data processing, LLM calls, database persistence, chart rendering, authentication, or integrations.
+## Execution Discipline
 
-## Required repo structure
+When working on a milestone:
 
-Create this structure, adjusting only if framework defaults require minor changes:
+* Implement only the requested milestone section.
+* Do not expand the task into a broader architecture rewrite.
+* Do not use subagents.
+* Do not review the whole codebase unless explicitly asked.
+* Read only files needed for the current task.
+* Do not print full file contents unless asked.
+* Before editing, give a plan with max 3 bullets unless the prompt says otherwise.
+* After editing, summarize with max 5 bullets unless the prompt says otherwise.
+* Run only relevant tests first.
+* Run the full suite only if cheap or explicitly requested.
+* If something is ambiguous, choose the smallest working implementation consistent with existing code.
 
-```text
-ai-data-analyst/
-  backend/
-    app/
-      __init__.py
-      main.py
+Do not implement out-of-scope features just because related code is nearby.
 
-      core/
-        __init__.py
-        config.py
-        errors.py
-        logging.py
+---
 
-      api/
-        __init__.py
-        routes/
-          __init__.py
-          health.py
+## Product Contract
 
-      schemas/
-        __init__.py
-        common.py
-        user.py
-        workspace.py
-        source.py
-        dataset.py
-        context_document.py
-        profile.py
-        cleaning.py
-        features.py
-        visualization.py
-        insights.py
-        analysis_run.py
+Inside a dataset, the user can:
 
-      services/
-        __init__.py
+* ask analytical questions
+* generate table-like outputs with aggregations, pivots, joins, filters, or comparisons
+* generate visualizations
+* ask to add calculated features or metrics
+* ask to clean the data
+* save dataset versions, saved views, and saved visuals
+* download table outputs or visual outputs
 
-      tools/
-        __init__.py
-        files/
-          __init__.py
-        data/
-          __init__.py
-        charts/
-          __init__.py
-        llm/
-          __init__.py
-          provider.py
-
-      repositories/
-        __init__.py
-
-      tests/
-        __init__.py
-        unit/
-          __init__.py
-          test_health.py
-          test_schemas.py
-
-    pyproject.toml
-    README.md
-
-  frontend/
-    app/
-      page.tsx
-    package.json
-    README.md
-
-  docker-compose.yml
-  CLAUDE.md
-  README.md
-```
-
-## Backend requirements
-
-Implement a minimal FastAPI app.
-
-Add:
+Use this rule:
 
 ```text
-GET /health
+If the request changes the reusable dataset state:
+  create a new DatasetVersion.
+
+If the request creates a reusable table-like output:
+  create a SavedView.
+
+If the request creates a reusable chart:
+  create a SavedVisual.
+
+If the request is only a one-time answer:
+  return the answer without persistence unless the user saves/downloads it.
 ```
 
-Expected response:
+Examples:
 
-```json
-{
-  "status": "ok",
-  "service": "ai-data-analyst-backend"
-}
-```
+* “What was revenue over the last 6 months?” → text/table answer, no new version.
+* “Show revenue by month and channel” → table output; can be saved as a view.
+* “Plot revenue over time” → visual output; can be saved as a visual.
+* “Add AOV as a column” → feature execution; creates a new dataset version.
+* “Clean missing revenue values” → cleaning execution; creates a new dataset version.
+* “Join orders and customers for this table” → saved view if saved.
+* “Add joined orders_customers as a reusable table in the dataset” → new dataset version.
 
-## Config requirements
+Chat must not silently mutate data. Dataset mutation requires explicit user approval/action.
 
-In `backend/app/core/config.py`, include minimal config for:
+---
+
+## Code Style
+
+Use:
+
+* Python 3.12
+* FastAPI for backend routes
+* Pydantic for schemas
+* SQLAlchemy + Alembic for persistence
+* PostgreSQL/Supabase Postgres for metadata
+* Supabase Storage for persistent file artifacts
+* DuckDB for per-version analytical dataset artifacts
+* pytest for tests
+* Ruff for linting/formatting
+* uv for Python dependency and command management
+
+Backend structure should follow:
 
 ```text
-APP_NAME
-ENV
-STORAGE_BACKEND
-LOCAL_STORAGE_DIR
+route -> service -> repository/storage/tool
 ```
 
-Use local storage default:
+Routes must stay thin.
 
-```text
-STORAGE_BACKEND = "local"
-LOCAL_STORAGE_DIR = "storage/uploads"
-```
+Routes should not contain:
 
-Do not implement actual upload/storage logic yet.
+* pandas logic
+* DuckDB transformation logic
+* LLM orchestration logic
+* business logic
+* storage implementation details
 
-## Schema requirements
+Services orchestrate workflows.
 
-Use Pydantic schemas with UUIDs and timezone-aware datetimes where appropriate.
+Repositories handle database persistence.
 
-Create schemas for:
+Storage backends handle persistent files.
 
-* User
-* Workspace
-* WorkspaceMembership
-* DataSource
-* UploadedFile
-* Dataset
-* DatasetSource
-* DatasetVersion
-* DatasetTable
-* DatasetPreview
-* DatasetColumn
-* ContextDocument
-* ContextSummary
-* NumericSummary
-* DateSummary
-* ColumnProfile
-* DataQualityIssue
-* DataProfile
-* CleaningPlan
-* CleaningPlanJson
-* CleaningStep
-* CleaningIssue
-* CleaningRecommendation
-* CleaningOperation
-* CleaningPreview
-* CleaningDecisions
-* CleaningDecisionsJson
-* CleaningDecisionItem
-* ResolvedCleaningPlanJson
-* ResolvedCleaningStep
-* CleaningResult
-* CleaningExecutionLogJson
-* CleaningStepResult
-* FeaturePlan
-* FeaturePlanJson
-* FeatureDefinition
-* FeatureDecisions
-* FeatureDecisionsJson
-* FeatureDecisionItem
-* FeatureResult
-* FeatureExecutionLogJson
-* VisualizationSpec
-* VisualizationResult
-* Insight
-* InsightReport
-* AnalysisRun
-* AnalysisStage
-* AnalysisArtifactRef
+Tools handle deterministic low-level operations such as:
 
-In `schemas/common.py`, define string enums for:
+* file parsing
+* profiling
+* cleaning execution
+* feature execution
+* DuckDB operations
+* chart spec generation
 
-* ArtifactStatus
-* WorkspaceRole
-* DataSourceKind
-* UploadedFileKind
-* DatasetSourceRole
-* DatasetVersionType
-* DataType
-* ImpactLevel
-* ApprovalStatus
-* DefaultDecision
-* UserDecision
-* IssueType
-* CleaningOperationType
-* FeatureOperationType
-* ChartType
-* InsightSeverity
-* AnalysisRunStatus
-* ExecutionStatus
+---
 
-Make schemas practical and typed, but do not over-engineer.
+## Domain Model Invariants
 
-Use `dict[str, Any]` for flexible JSON fields like metadata, parameters, summaries, warnings, and specs.
+A `Dataset` is a logical analysis container, not a single uploaded file.
 
-## DatasetVersion schema requirement
+A dataset can have:
+
+* many `DataSource`s
+* many `UploadedFile`s through `DatasetSource`
+* many `DatasetVersion`s
+
+A `DatasetVersion` is a materialized state of the dataset.
+
+A `DatasetVersion` can have many `DatasetTable`s.
+
+Analysis artifacts belong to a `DatasetVersion`, not directly to an `UploadedFile`.
+
+Profiling, cleaning, feature engineering, visualization, saved views, saved visuals, and chat should operate on a selected `DatasetVersion`.
+
+Uploading an additional file to an existing dataset must not create a new `Dataset`.
+
+Cleaning and feature execution create new `DatasetVersion`s.
+
+Visualization, saved views, saved visuals, and chat outputs read from a selected `DatasetVersion` and do not mutate it.
+
+Existing dataset versions must not be overwritten.
+
+---
+
+## Dataset Version Rules
 
 Do not encode version type or version number into the primary key.
 
-`DatasetVersion` must include:
+`DatasetVersion` should include:
 
-```text
-dataset_version_id: UUID
-dataset_id: UUID
-parent_version_id: UUID | None
-version_number: int
-version_type: DatasetVersionType
-display_name: str | None
-description: str | None
-storage_path: str | None
-row_count: int | None
-column_count: int | None
-created_by_user_id: UUID
-created_at: datetime
-metadata: dict[str, Any]
-```
+* `dataset_version_id`
+* `dataset_id`
+* `parent_version_id`
+* `version_number`
+* `version_type`
+* `display_name`
+* `description`
+* storage metadata
+* row/column counts if applicable
+* created metadata
 
 Multiple versions may share the same `version_type`.
 
-Example: a user may clean and save several times, creating multiple versions where `version_type = cleaned`.
-
-Conceptually, version numbers should be unique within each dataset:
+Example:
 
 ```text
-unique(dataset_id, version_number)
+v1 original
+v2 cleaned
+v3 cleaned
+v4 enriched
 ```
 
-Do not implement database constraints yet, but design schemas with this model in mind.
+Version numbers should be unique within each dataset.
 
-## Cleaning schema requirements
+Use beginner-facing labels where relevant:
 
-Cleaning steps should be stored as JSON for flexibility.
+* Original upload
+* Cleaned copy
+* Copy with calculated metrics
+* Current copy
 
-The cleaning model should support:
+---
+
+## Storage and Execution Architecture
+
+Use this architecture for uploaded and derived user data:
+
+* Supabase Postgres stores metadata, plans, decisions, jobs, lineage, and result records.
+* Supabase Storage stores persistent files: raw uploads, DuckDB dataset version files, and generated result artifacts.
+* DuckDB work happens inside backend services/workers using temporary local files only.
+* Do not store raw uploads or `.duckdb` binary files in Postgres.
+* Do not store persistent dataset files on local disk.
+* Temporary local files are allowed only as scratch files during one request/job and must be cleaned up.
+
+Dataset version storage rule:
+
+* Each materialized `DatasetVersion` should point to one `.duckdb` artifact in storage.
+* A `.duckdb` version file may contain many tables.
+* Existing `.duckdb` version files are immutable.
+* Cleaning and feature execution create new `.duckdb` version files.
+* Visualization reads from an existing `.duckdb` version and does not mutate it.
+
+Storage path convention:
 
 ```text
-CleaningPlan.plan_json
-CleaningDecisions.decisions_json
-CleaningResult.execution_log_json
+raw uploads:
+workspaces/{workspace_id}/datasets/{dataset_id}/raw_uploads/{uploaded_file_id}_{filename}
+
+dataset versions:
+workspaces/{workspace_id}/datasets/{dataset_id}/versions/v{version_number}_{version_type}.duckdb
+
+result artifacts:
+workspaces/{workspace_id}/datasets/{dataset_id}/results/{artifact_id}.{ext}
 ```
 
-Each cleaning step should contain:
+Postgres should store storage metadata such as:
+
+* `storage_backend`
+* `storage_bucket`
+* `storage_path`
+* `storage_format`
+* `row_count`
+* `column_count`
+
+---
+
+## Supabase Rules
+
+Supabase Postgres is the metadata/control database.
+
+Supabase Storage is for persistent file artifacts.
+
+Do not use Supabase Postgres for arbitrary dynamic user data tables unless a milestone explicitly asks for it.
+
+Do not store large table outputs directly in Postgres.
+
+Use storage paths and metadata references instead.
+
+Do not add Supabase Auth unless a milestone explicitly asks for authentication.
+
+---
+
+## DuckDB Rules
+
+DuckDB is the analytical execution layer and dataset artifact format.
+
+Use DuckDB for:
+
+* imported dataset versions
+* multi-table dataset snapshots
+* profiling reads
+* cleaning execution
+* feature execution
+* visualization query execution
+* saved view generation later
+
+Do not treat DuckDB as the app metadata database.
+
+Do not use one shared mutable DuckDB file for all users or all datasets.
+
+Prefer one immutable `.duckdb` file per materialized dataset version.
+
+Safe pattern:
 
 ```text
-step_id
-sequence_order
-issue
-recommendation
-operation
-preview
+read v1_original.duckdb
+write v2_cleaned.duckdb
 ```
 
-Each issue should contain:
+Unsafe pattern:
 
 ```text
-issue_type
-table_name
-column_name
-description
-affected_rows_count
-affected_rows_percent
-sample_values
+keep mutating current.duckdb forever
 ```
 
-Each recommendation should contain:
+---
+
+## Background Job Rules
+
+Heavy data-processing work should not run inside FastAPI request handlers long-term.
+
+FastAPI should:
+
+* validate requests
+* create jobs
+* return `job_id`
+* serve job status/results
+* read/write metadata
+
+Workers should:
+
+* parse uploaded files
+* create DuckDB version files
+* profile datasets
+* execute cleaning
+* execute features
+* generate visualization data
+* run heavy DuckDB queries
+
+Use one worker first.
+
+Design job claiming so multiple workers can be added later, but do not add distributed systems complexity unless explicitly requested.
+
+---
+
+## Cleaning Rules
+
+Cleaning is human-in-the-loop.
+
+Use this model:
 
 ```text
-action_type
-recommended_action
-rationale
-impact_level
-affects_key_metrics
-requires_human_approval
-default_decision
+CleaningPlan = immutable proposal
+CleaningDecisions = user approvals/rejections/modifications
+CleaningResult = what actually happened
+DatasetVersion = resulting cleaned copy
 ```
 
-Each operation should contain:
+Do not mutate `CleaningPlan.plan_json.steps` to store approvals.
+
+Per-step approval belongs in `CleaningDecisions`.
+
+Cleaning execution must be deterministic.
+
+LLMs may suggest plans, but deterministic code applies approved operations.
+
+Original datasets must not be overwritten.
+
+Row-count-changing operations require human approval.
+
+Human approval is required for:
+
+* key metric columns
+* ID columns
+* date columns
+* join/pivot/filter columns
+* issues affecting at least 10% of rows
+* operations that drop rows or change row counts
+
+Low-impact issues may be ignored when:
+
+* affected rows are below 10%
+* the column is not used in key metrics
+* the issue does not affect joins, pivots, or filters
+
+---
+
+## Feature Engineering Rules
+
+Feature engineering is human-in-the-loop.
+
+Use this model:
 
 ```text
-operation_type
-parameters
+FeaturePlan = immutable proposal
+FeatureDecisions = user approvals/rejections
+FeatureResult = execution log
+DatasetVersion = new enriched copy
 ```
 
-Each preview should contain:
+Do not mutate `FeaturePlan.plan_json.features` to store approvals.
+
+Feature execution must be deterministic.
+
+Do not execute arbitrary Python or arbitrary model-generated formulas.
+
+`custom_formula` may exist in schemas but should not execute unless a later milestone explicitly implements safe formula execution.
+
+Feature engineering may create:
+
+* new columns in existing tables
+* derived tables
+* reusable metrics
+
+If the feature becomes part of the reusable dataset state, create a new `DatasetVersion`.
+
+---
+
+## Visualization Rules
+
+Visualization generation should be deterministic unless a milestone explicitly adds LLM-based chart planning.
+
+Use broad chart types:
+
+* bar
+* line
+* pie
+* scatter
+
+Visualization reads from a selected `DatasetVersion`.
+
+Visualization does not mutate dataset versions.
+
+Generated chart specs should be frontend-friendly JSON.
+
+Saved visuals are separate artifacts.
+
+Do not implement dynamic dashboards unless explicitly requested.
+
+---
+
+## Saved Views and Saved Visuals
+
+A saved view is a saved table-like result.
+
+Examples:
+
+* grouped aggregation
+* pivot-style summary
+* joined result
+* filtered table
+* feature-derived table
+* chat-generated table output
+
+A saved visual is a saved chart result.
+
+Saved views and saved visuals must be scoped to:
+
+* `workspace_id`
+* `dataset_id`
+* `dataset_version_id`
+
+Saved views should support:
+
+* preview
+* delete
+* download as CSV/Excel if supported
+* reuse in future analysis
+
+Saved visuals should support:
+
+* render
+* delete
+* download as PNG client-side if supported
+* download chart data if supported
+
+Do not implement dynamic dashboards in the MVP.
+
+Do not add drag-and-drop dashboard layouts unless explicitly requested.
+
+Large saved view data should live in storage, not Postgres.
+
+Postgres stores metadata and storage paths.
+
+---
+
+## Dataset Chat Rules
+
+Chat is scoped to:
+
+* workspace
+* dataset
+* selected dataset version
+
+Chat outputs can be:
+
+* text
+* table result
+* visual result
+
+Table outputs should support:
+
+* Save as view
+* Download CSV
+* Download Excel if supported
+
+Visual outputs should support:
+
+* Save to visuals
+* Download PNG
+* Download data
+
+Chat should not directly mutate dataset versions.
+
+Table outputs may be saved as views only through explicit user action.
+
+Visual outputs may be saved as visuals only through explicit user action.
+
+Do not execute arbitrary unsafe SQL from the model.
+
+Prefer structured query specs and deterministic tools.
+
+---
+
+## Frontend Product Model
+
+The frontend should use the user’s mental model, not raw backend object names.
+
+User-facing navigation:
+
+* Workspaces
+* Workspace page with datasets
+* Dataset playground
+
+Dataset playground sections:
+
+* Tables
+* Versions
+* Views
+* Visuals
+* Chat
+
+Recommended routes:
 
 ```text
-rows_before
-estimated_rows_after
-estimated_rows_removed
-columns_changed
-metrics_potentially_affected
+/workspaces
+/workspaces/{workspaceId}
+/workspaces/{workspaceId}/datasets/{datasetId}?tab=tables
+/workspaces/{workspaceId}/datasets/{datasetId}?tab=versions
+/workspaces/{workspaceId}/datasets/{datasetId}?tab=views
+/workspaces/{workspaceId}/datasets/{datasetId}?tab=visuals
+/workspaces/{workspaceId}/datasets/{datasetId}?tab=chat
 ```
 
-Include comments/docstrings explaining:
+Dataset page rule:
 
-* low-impact issues may be ignored when affected rows are below 10%, the column is not used in key metrics, and the issue does not affect joins/pivots/filters
-* human approval is required for row-count-changing operations, key metric columns, ID/date columns, or issues affecting at least 10% of rows
-* original datasets must not be overwritten
-* cleaning execution should create a new dataset version in later milestones
+* The dataset page must always have a selected/current dataset version.
+* Tables, views, visuals, and chat outputs must be scoped to a dataset version.
+* If a view or visual was created from an older version, show that clearly.
 
-## LLM provider abstraction
+Use beginner-friendly labels:
 
-In `tools/llm/provider.py`, create:
+* Current copy
+* Original upload
+* Cleaned copy
+* Copy with calculated metrics
+* Tables
+* Saved views
+* Saved visuals
 
-* `LLMProvider` protocol or abstract base class
-* `FakeLLMProvider`
+Hide technical terms by default:
 
-Do not call external LLM APIs.
+* `DatasetVersion`
+* `DatasetTable`
+* `VisualizationResult`
+* `SavedView`
+* `storage_path`
+* `artifact`
+* `metadata`
+* `execution_log_json`
 
-## Frontend requirements
+Use “Show details” for technical metadata if needed.
 
-Create a minimal Next.js page with:
+---
 
-* project title
-* short product description
-* placeholder sections:
+## LLM Rules
 
-  * upload dataset
-  * profile data
-  * cleaning plan
-  * feature engineering
-  * visualization
-  * insight report
+Do not call external LLM APIs unless the milestone explicitly asks for it.
 
-No real API integration yet.
+All LLM access should go through a provider/service abstraction.
 
-## Testing requirements
+Do not call OpenAI, Anthropic, or other providers directly from random routes/services.
 
-Add tests for:
+Use a wrapper such as:
 
-1. health endpoint
-2. constructing representative schema objects for:
+```text
+llm provider -> llm service -> domain service
+```
 
-   * User
-   * Workspace
-   * DataSource
-   * UploadedFile
-   * Dataset
-   * DatasetVersion
-   * DatasetTable
-   * ContextDocument
-   * DataProfile
-   * CleaningPlan
-   * CleaningDecisions
-   * CleaningResult
-   * FeaturePlan
-   * VisualizationSpec
-   * InsightReport
-   * AnalysisRun
+Fake providers should be used in tests.
 
-Tests must be deterministic and must not require external services.
+LLMs may propose plans, queries, or explanations.
 
-## Code quality
+Deterministic tools should execute data operations.
 
-Set up `backend/pyproject.toml` with:
+---
 
-* pytest
-* ruff
-* Python 3.12 target
-* reasonable line length
+## Testing Rules
 
-Use type hints.
+Tests must be deterministic.
 
-Keep files small and readable.
+Tests should not require live external services unless explicitly marked integration tests.
 
-## README requirements
+Mock or fake:
 
-Create a root README explaining:
+* Supabase Storage
+* LLM providers
+* external APIs
 
-* project purpose
-* milestone scope
-* domain model summary
-* repo structure
-* how to run backend
-* how to run tests
-* how to run frontend
+Use small in-test DataFrames/files.
 
-## Acceptance criteria
+Do not require real user data.
 
-Milestone 1 is complete when:
+---
 
-1. repo skeleton exists
-2. FastAPI app starts
-3. `/health` works
-4. core schemas exist
-5. schema tests pass
-6. health test passes
-7. README exists
-8. no out-of-scope features are implemented
+## Milestone Roadmap
 
-Before editing files, briefly restate your implementation plan.
+Completed or existing:
 
-After editing files, summarize:
+* M1: repo skeleton + schemas
+* M2: file upload + in-memory repositories
+* M3: deterministic profiling
+* M4: cleaning plan generation
+* M5: cleaning decisions + deterministic cleaning execution
+* M6: feature engineering
+* M7: SQL database persistence
+* M8: visualization generation
 
-* files created
-* tests added
-* commands to run
-* assumptions/limitations
+Next backend milestones:
 
-## Token discipline
+* M9: Supabase Storage + DuckDB Dataset Versions
+* M10: Background Job System + One Worker
+* M11: Saved Views + Saved Visuals Backend
+* M12: Dataset Chat Backend
+* M13: Production Hardening
 
-- Do not review the whole codebase unless explicitly asked.
-- Read only files needed for the current task.
-- Do not print full file contents unless asked.
-- Keep plans to max 5 bullets.
-- Keep summaries to max 8 bullets.
-- Do not restate requirements already present in milestone files.
-- Prefer small incremental edits over broad rewrites.
+Frontend milestones:
+
+* FE1: Dataset Playground
+* FE2: Chat/save/download polish if needed

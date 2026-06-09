@@ -87,7 +87,7 @@ def _llm_feature_suggestions(
         try:
             op = FeatureOperationType(item["operation_type"])
         except (KeyError, ValueError):
-            op = FeatureOperationType.custom
+            op = FeatureOperationType.custom_formula
         added.append(FeatureDefinition(
             feature_id=uuid5(NAMESPACE_DNS, f"{profile.table_name}.llm.{item['feature_name']}"),
             feature_name=item["feature_name"],

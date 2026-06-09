@@ -2,9 +2,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.dependencies import Repos, get_repos
+from app.dependencies import Repos, get_repos, get_storage
 from app.schemas.profile import DataProfile
 from app.services.profiling_service import create_profiles
+from app.tools.files.storage_service import StorageBackend
 
 router = APIRouter()
 
@@ -17,12 +18,14 @@ def create_profile(
     dataset_id: UUID,
     dataset_version_id: UUID,
     repos: Repos = Depends(get_repos),
+    storage: StorageBackend = Depends(get_storage),
 ) -> list[DataProfile]:
     try:
         return create_profiles(
             dataset_id=dataset_id,
             dataset_version_id=dataset_version_id,
             repos=repos,
+            storage=storage,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

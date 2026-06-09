@@ -1,4 +1,6 @@
-"""Integration tests for profile API endpoints via TestClient."""
+"""Integration tests for profile API endpoints (M9C: DuckDB-backed versions)."""
+
+from __future__ import annotations
 
 import io
 from pathlib import Path
@@ -8,8 +10,9 @@ import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
-from app.dependencies import Repos, get_repos
+from app.dependencies import Repos, get_repos, get_storage
 from app.main import app
+from app.tools.files.storage_service import LocalStorageBackend
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 CSV_FILE = FIXTURES / "simple_sales.csv"
@@ -17,19 +20,24 @@ WORKSPACE_ID = str(uuid4())
 
 
 @pytest.fixture()
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setattr("app.tools.files.storage.settings.LOCAL_STORAGE_DIR", str(tmp_path))
+def storage_dir(tmp_path: Path) -> Path:
+    return tmp_path / "storage"
+
+
+@pytest.fixture()
+def client(storage_dir: Path) -> TestClient:
     fresh = Repos()
+    backend = LocalStorageBackend(str(storage_dir))
     app.dependency_overrides[get_repos] = lambda: fresh
+    app.dependency_overrides[get_storage] = lambda: backend
     yield TestClient(app)
     app.dependency_overrides.clear()
 
 
 def _upload_csv(client: TestClient) -> dict:
-    data = CSV_FILE.read_bytes()
     return client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", data, "text/csv")},
+        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
     ).json()
 
 
@@ -51,7 +59,6 @@ def xlsx_bytes() -> bytes:
 # ---------------------------------------------------------------------------
 # CSV profiling via API
 # ---------------------------------------------------------------------------
-
 
 def test_profile_csv_status_200(client: TestClient) -> None:
     upload = _upload_csv(client)
@@ -108,10 +115,21 @@ def test_profile_csv_revenue_metric(client: TestClient) -> None:
     assert cols["revenue"]["is_likely_metric"]
 
 
+def test_profile_reads_from_duckdb_artifact(client: TestClient, storage_dir: Path) -> None:
+    """Profiling loads data from the .duckdb version artifact, not raw CSV."""
+    upload = _upload_csv(client)
+    dataset_id = upload["dataset"]["dataset_id"]
+    version_id = upload["dataset_version"]["dataset_version_id"]
+    ver_duckdb = storage_dir / upload["dataset_version"]["storage_path"]
+    assert ver_duckdb.exists(), "Version .duckdb must exist before profiling"
+
+    profiles = client.post(f"/datasets/{dataset_id}/versions/{version_id}/profile").json()
+    assert profiles[0]["row_count"] == 5
+
+
 # ---------------------------------------------------------------------------
 # Excel multi-sheet profiling via API
 # ---------------------------------------------------------------------------
-
 
 def test_profile_excel_two_profiles(client: TestClient, xlsx_bytes: bytes) -> None:
     upload = client.post(
@@ -122,15 +140,28 @@ def test_profile_excel_two_profiles(client: TestClient, xlsx_bytes: bytes) -> No
     version_id = upload["dataset_version"]["dataset_version_id"]
     profiles = client.post(f"/datasets/{dataset_id}/versions/{version_id}/profile").json()
     assert len(profiles) == 2
+    # Table names are sanitized (lowercase)
     names = {p["table_name"] for p in profiles}
-    assert "January" in names
-    assert "February" in names
+    assert "january" in names
+    assert "february" in names
+
+
+def test_profile_excel_correct_row_counts(client: TestClient, xlsx_bytes: bytes) -> None:
+    upload = client.post(
+        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
+        files={"file": ("sales.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    ).json()
+    dataset_id = upload["dataset"]["dataset_id"]
+    version_id = upload["dataset_version"]["dataset_version_id"]
+    profiles = client.post(f"/datasets/{dataset_id}/versions/{version_id}/profile").json()
+    by_name = {p["table_name"]: p for p in profiles}
+    assert by_name["january"]["row_count"] == 1
+    assert by_name["february"]["row_count"] == 1
 
 
 # ---------------------------------------------------------------------------
 # Error cases
 # ---------------------------------------------------------------------------
-
 
 def test_profile_unknown_version_404(client: TestClient) -> None:
     resp = client.post(f"/datasets/{uuid4()}/versions/{uuid4()}/profile")

@@ -2,6 +2,7 @@ from collections.abc import Generator
 from dataclasses import dataclass, field
 
 from app.tools.llm.provider import FakeLLMProvider, LLMProvider, OpenAILLMProvider
+from app.tools.files.storage_service import LocalStorageBackend, StorageBackend, SupabaseStorageBackend
 
 from app.repositories.memory import (
     CleaningPlanRepository,
@@ -40,6 +41,17 @@ class Repos:
 
 
 _memory_repos = Repos()
+
+
+def get_storage() -> StorageBackend:
+    from app.core.config import settings  # noqa: PLC0415
+    if settings.STORAGE_BACKEND == "supabase":
+        return SupabaseStorageBackend(
+            url=settings.SUPABASE_URL,
+            key=settings.SUPABASE_SERVICE_ROLE_KEY,
+            bucket=settings.SUPABASE_STORAGE_BUCKET,
+        )
+    return LocalStorageBackend(base_dir=settings.LOCAL_STORAGE_DIR)
 
 
 def get_llm_provider() -> LLMProvider:

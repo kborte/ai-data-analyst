@@ -6,8 +6,9 @@ Upload route creates a queued job; worker processes it end-to-end.
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import openpyxl
 import pytest
@@ -25,6 +26,18 @@ TXT_FILE = FIXTURES / "company_context.txt"
 WORKSPACE_ID = str(uuid4())
 
 
+def _seed_workspace(repos: Repos, workspace_id: str) -> None:
+    """Insert the workspace row required by the upload route's FK check."""
+    from app.schemas.workspace import Workspace  # noqa: PLC0415
+    ws = Workspace(
+        workspace_id=UUID(workspace_id),
+        name="Test Workspace",
+        created_by_user_id=uuid4(),
+        created_at=datetime.now(tz=UTC),
+    )
+    repos.workspace._store[ws.workspace_id] = ws
+
+
 @pytest.fixture()
 def storage_dir(tmp_path: Path) -> Path:
     return tmp_path / "storage"
@@ -33,6 +46,7 @@ def storage_dir(tmp_path: Path) -> Path:
 @pytest.fixture()
 def ctx(storage_dir: Path):
     fresh_repos = Repos()
+    _seed_workspace(fresh_repos, WORKSPACE_ID)
     backend = LocalStorageBackend(str(storage_dir))
     app.dependency_overrides[get_repos] = lambda: fresh_repos
     app.dependency_overrides[get_storage] = lambda: backend

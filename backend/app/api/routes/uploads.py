@@ -43,6 +43,9 @@ async def upload_dataset_route(
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    if repos.workspace.get(workspace_id) is None:
+        raise HTTPException(status_code=404, detail=f"Workspace {workspace_id} not found.")
+
     if dataset_id is not None:
         existing = repos.dataset.get(dataset_id)
         if existing is None:

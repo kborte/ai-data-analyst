@@ -1,0 +1,151 @@
+export interface Dataset {
+  dataset_id: string;
+  workspace_id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface DatasetVersion {
+  dataset_version_id: string;
+  dataset_id: string;
+  version_number: number;
+  version_type: string;
+  display_name: string | null;
+  description: string | null;
+  storage_path: string | null;
+  row_count: number | null;
+  column_count: number | null;
+  created_at: string;
+  parent_version_id: string | null;
+}
+
+export interface DatasetTable {
+  table_id: string;
+  dataset_version_id: string;
+  table_name: string;
+  storage_path: string | null;
+  row_count: number | null;
+  column_count: number | null;
+}
+
+export interface ColumnProfile {
+  column_name: string;
+  data_type: string;
+  null_count: number | null;
+  null_percent: number | null;
+  unique_count: number | null;
+  is_likely_id: boolean;
+  is_likely_metric: boolean;
+  is_likely_categorical: boolean;
+  is_likely_date: boolean;
+}
+
+export interface DataProfile {
+  profile_id: string;
+  dataset_version_id: string;
+  table_name: string;
+  row_count: number | null;
+  column_count: number | null;
+  column_profiles: ColumnProfile[];
+  created_at: string;
+}
+
+export interface SavedView {
+  saved_view_id: string;
+  workspace_id: string;
+  dataset_id: string;
+  dataset_version_id: string;
+  name: string;
+  description: string | null;
+  source_type: string;
+  storage_path: string | null;
+  storage_format: string | null;
+  row_count: number | null;
+  column_count: number | null;
+  created_at: string;
+}
+
+export interface SavedVisual {
+  visual_id: string;
+  workspace_id: string;
+  dataset_id: string;
+  dataset_version_id: string;
+  title: string;
+  description: string | null;
+  chart_type: string;
+  source_type: string;
+  created_at: string;
+}
+
+export interface DatasetFile {
+  file_id: string;
+  data_source_id: string;
+  original_filename: string;
+  file_kind: string;
+  size_bytes: number;
+  uploaded_at: string;
+}
+
+export interface Job {
+  job_id: string;
+  workspace_id: string;
+  dataset_id: string | null;
+  job_type: string;
+  status: string;
+  created_at: string;
+}
+
+export interface TextOutput {
+  output_type: "text";
+  dataset_version_id: string;
+  title: string;
+  content: string;
+  references: string[];
+}
+
+export interface TableOutput {
+  output_type: "table";
+  dataset_version_id: string;
+  title: string;
+  description: string | null;
+  columns: string[];
+  preview_rows: unknown[][];
+  row_count: number;
+  source_spec_json: Record<string, unknown>;
+  storage_backend: string | null;
+  storage_bucket: string | null;
+  storage_path: string | null;
+  storage_format: string | null;
+  can_save_as_view: true;
+}
+
+export interface VisualOutput {
+  output_type: "visual";
+  dataset_version_id: string;
+  title: string;
+  description: string | null;
+  chart_type: string;
+  chart_spec_json: Record<string, unknown>;
+  source_spec_json: Record<string, unknown>;
+  data_storage_backend: string | null;
+  data_storage_bucket: string | null;
+  data_storage_path: string | null;
+  can_save_to_visuals: true;
+}
+
+export interface MixedOutput {
+  output_type: "mixed";
+  dataset_version_id: string;
+  title: string;
+  summary: string;
+  outputs: (TextOutput | TableOutput | VisualOutput)[];
+}
+
+export type AnalyticsOutput = TextOutput | TableOutput | VisualOutput | MixedOutput;
+
+export interface AnalyticsResponse {
+  dataset_id: string;
+  dataset_version_id: string;
+  question: string;
+  output: AnalyticsOutput;
+}

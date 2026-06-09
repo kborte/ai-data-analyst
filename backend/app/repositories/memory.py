@@ -14,7 +14,9 @@ from app.schemas.dataset import Dataset, DatasetSource, DatasetTable, DatasetVer
 from app.schemas.features import FeaturePlan, FeatureResult
 from app.schemas.profile import DataProfile
 from app.schemas.source import DataSource, UploadedFile
+from app.schemas.user import User
 from app.schemas.visualization import VisualizationPlan, VisualizationResult
+from app.schemas.workspace import Workspace
 
 
 class DataSourceRepository:
@@ -75,6 +77,13 @@ class DatasetSourceRepository:
 
     def list_by_dataset(self, dataset_id: UUID) -> list[DatasetSource]:
         return [v for v in self._store.values() if v.dataset_id == dataset_id]
+
+    def delete_by_data_source(self, dataset_id: UUID, data_source_id: UUID) -> bool:
+        for ds_id, obj in list(self._store.items()):
+            if obj.dataset_id == dataset_id and obj.data_source_id == data_source_id:
+                del self._store[ds_id]
+                return True
+        return False
 
 
 class DatasetVersionRepository:
@@ -327,3 +336,55 @@ class SavedVisualRepository:
 
     def delete(self, visual_id: UUID) -> bool:
         return self._store.pop(visual_id, None) is not None
+
+
+class UserRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, User] = {}
+
+    def create(self, email: str, display_name: str, created_at: object) -> User:
+        import uuid as _uuid  # noqa: PLC0415
+        from datetime import datetime  # noqa: PLC0415
+        user = User(
+            user_id=_uuid.uuid4(),
+            email=email,
+            display_name=display_name,
+            created_at=created_at if isinstance(created_at, datetime) else datetime.now(),  # type: ignore[arg-type]
+        )
+        self._store[user.user_id] = user
+        return user
+
+    def get(self, user_id: UUID) -> User | None:
+        return self._store.get(user_id)
+
+    def find_by_email(self, email: str) -> User | None:
+        return next((u for u in self._store.values() if u.email == email), None)
+
+
+class WorkspaceRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, Workspace] = {}
+        self._memberships: list[tuple[UUID, UUID]] = []  # (workspace_id, user_id)
+
+    def create(self, name: str, created_by_user_id: UUID, created_at: object) -> Workspace:
+        import uuid as _uuid  # noqa: PLC0415
+        from datetime import datetime  # noqa: PLC0415
+        ws = Workspace(
+            workspace_id=_uuid.uuid4(),
+            name=name,
+            created_by_user_id=created_by_user_id,
+            created_at=created_at if isinstance(created_at, datetime) else datetime.now(),  # type: ignore[arg-type]
+        )
+        self._store[ws.workspace_id] = ws
+        return ws
+
+    def get(self, workspace_id: UUID) -> Workspace | None:
+        return self._store.get(workspace_id)
+
+    def list_by_user(self, user_id: UUID) -> list[Workspace]:
+        ws_ids = {ws_id for ws_id, uid in self._memberships if uid == user_id}
+        return [ws for ws_id, ws in self._store.items() if ws_id in ws_ids]
+
+    def add_member(self, workspace_id: UUID, user_id: UUID, role: str, joined_at: object) -> None:
+        if (workspace_id, user_id) not in self._memberships:
+            self._memberships.append((workspace_id, user_id))

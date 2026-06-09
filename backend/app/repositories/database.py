@@ -25,10 +25,15 @@ from app.db.models import (
     SavedViewModel,
     SavedVisualModel,
     UploadedFileModel,
+    UserModel,
     VisualizationPlanModel,
     VisualizationResultModel,
+    WorkspaceMembershipModel,
+    WorkspaceModel,
 )
 from app.schemas.job import Job
+from app.schemas.user import User
+from app.schemas.workspace import Workspace, WorkspaceMembership
 from app.schemas.cleaning import (
     CleaningDecisions,
     CleaningDecisionsJson,
@@ -352,6 +357,21 @@ class DatasetSourceRepository:
             .all()
         )
         return [_dataset_source_from_orm(r) for r in rows]
+
+    def delete_by_data_source(self, dataset_id: UUID, data_source_id: UUID) -> bool:
+        row = (
+            self._session.query(DatasetSourceModel)
+            .filter(
+                DatasetSourceModel.dataset_id == dataset_id,
+                DatasetSourceModel.data_source_id == data_source_id,
+            )
+            .first()
+        )
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._session.flush()
+        return True
 
 
 class DatasetVersionRepository:
@@ -1047,3 +1067,108 @@ class SavedVisualRepository:
         self._session.delete(row)
         self._session.flush()
         return True
+
+
+# --- User repository ---
+
+
+def _user_from_orm(row: UserModel) -> User:
+    return User(
+        user_id=row.user_id,
+        email=row.email,
+        display_name=row.display_name,
+        created_at=row.created_at,
+    )
+
+
+class UserRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def create(self, email: str, display_name: str, created_at: object) -> User:
+        import uuid as _uuid  # noqa: PLC0415
+        row = UserModel(
+            user_id=_uuid.uuid4(),
+            email=email,
+            display_name=display_name,
+            created_at=created_at,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return _user_from_orm(row)
+
+    def get(self, user_id: UUID) -> User | None:
+        row = self._session.get(UserModel, user_id)
+        return _user_from_orm(row) if row else None
+
+    def find_by_email(self, email: str) -> User | None:
+        row = self._session.query(UserModel).filter(UserModel.email == email).first()
+        return _user_from_orm(row) if row else None
+
+
+# --- Workspace repository ---
+
+
+def _workspace_from_orm(row: WorkspaceModel) -> Workspace:
+    if row.created_by_user_id is None:
+        raise ValueError(f"Workspace {row.workspace_id} has no created_by_user_id")
+    return Workspace(
+        workspace_id=row.workspace_id,
+        name=row.name,
+        description=row.description,
+        created_by_user_id=row.created_by_user_id,
+        created_at=row.created_at,
+    )
+
+
+class WorkspaceRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def create(self, name: str, created_by_user_id: UUID, created_at: object) -> Workspace:
+        import uuid as _uuid  # noqa: PLC0415
+        row = WorkspaceModel(
+            workspace_id=_uuid.uuid4(),
+            name=name,
+            created_by_user_id=created_by_user_id,
+            created_at=created_at,
+        )
+        self._session.add(row)
+        self._session.flush()
+        return _workspace_from_orm(row)
+
+    def get(self, workspace_id: UUID) -> Workspace | None:
+        row = self._session.get(WorkspaceModel, workspace_id)
+        return _workspace_from_orm(row) if row else None
+
+    def list_by_user(self, user_id: UUID) -> list[Workspace]:
+        rows = (
+            self._session.query(WorkspaceModel)
+            .join(WorkspaceMembershipModel, WorkspaceModel.workspace_id == WorkspaceMembershipModel.workspace_id)
+            .filter(WorkspaceMembershipModel.user_id == user_id)
+            .order_by(WorkspaceModel.created_at.desc())
+            .all()
+        )
+        return [_workspace_from_orm(r) for r in rows]
+
+    def add_member(self, workspace_id: UUID, user_id: UUID, role: str, joined_at: object) -> None:
+        import uuid as _uuid  # noqa: PLC0415
+        existing = (
+            self._session.query(WorkspaceMembershipModel)
+            .filter(
+                WorkspaceMembershipModel.workspace_id == workspace_id,
+                WorkspaceMembershipModel.user_id == user_id,
+            )
+            .first()
+        )
+        if existing:
+            return
+        row = WorkspaceMembershipModel(
+            membership_id=_uuid.uuid4(),
+            workspace_id=workspace_id,
+            user_id=user_id,
+            role=role,
+            joined_at=joined_at,
+        )
+        self._session.add(row)
+        self._session.flush()

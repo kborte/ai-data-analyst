@@ -93,68 +93,67 @@ def test_get_storage_defaults_to_local_for_unknown_backend(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def local_client(tmp_path: Path) -> TestClient:
+def local_ctx(tmp_path: Path):
     fresh = Repos()
     backend = LocalStorageBackend(str(tmp_path / "storage"))
     app.dependency_overrides[get_repos] = lambda: fresh
     app.dependency_overrides[get_storage] = lambda: backend
-    yield TestClient(app)
+    yield TestClient(app), fresh, backend
     app.dependency_overrides.clear()
 
 
 @pytest.fixture()
-def fake_client() -> TestClient:
-    """Client that uses an in-memory fake backend — zero disk writes."""
+def fake_ctx(tmp_path: Path):
+    """Client + repos + fake in-memory backend — zero disk writes."""
     fresh = Repos()
     fake = FakeStorageBackend()
     app.dependency_overrides[get_repos] = lambda: fresh
     app.dependency_overrides[get_storage] = lambda: fake
-    yield TestClient(app)
+    yield TestClient(app), fresh, fake
     app.dependency_overrides.clear()
 
 
-def test_dataset_version_storage_path_is_duckdb(local_client: TestClient) -> None:
-    body = local_client.post(
+def _upload_and_run(client, repos, backend):
+    """Upload CSV, run worker, return (version, uploaded_file)."""
+    from app.worker.runner import run_one  # noqa: PLC0415
+    client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
         files={"file": ("simple_sales.csv", CSV_BYTES, "text/csv")},
-    ).json()
-    storage_path = body["dataset_version"]["storage_path"]
-    assert storage_path is not None
-    assert storage_path.endswith(".duckdb"), f"Expected .duckdb path, got: {storage_path}"
+    )
+    run_one(repos.job, repos, storage=backend, llm=None)
+    versions = list(repos.dataset_version._store.values())
+    files = list(repos.uploaded_file._store.values())
+    return versions[0], files[0]
 
 
-def test_dataset_version_storage_path_contains_workspace_and_dataset(local_client: TestClient) -> None:
-    body = local_client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_BYTES, "text/csv")},
-    ).json()
-    storage_path = body["dataset_version"]["storage_path"]
-    dataset_id = body["dataset"]["dataset_id"]
-    assert WORKSPACE_ID in storage_path
-    assert dataset_id in storage_path
+def test_dataset_version_storage_path_is_duckdb(local_ctx) -> None:
+    client, repos, backend = local_ctx
+    version, _ = _upload_and_run(client, repos, backend)
+    assert version.storage_path is not None
+    assert version.storage_path.endswith(".duckdb"), f"Expected .duckdb, got: {version.storage_path}"
 
 
-def test_dataset_table_has_no_individual_storage_path(local_client: TestClient) -> None:
+def test_dataset_version_storage_path_contains_workspace_and_dataset(local_ctx) -> None:
+    client, repos, backend = local_ctx
+    version, _ = _upload_and_run(client, repos, backend)
+    assert WORKSPACE_ID in version.storage_path
+    assert str(version.dataset_id) in version.storage_path
+
+
+def test_dataset_table_has_no_individual_storage_path(local_ctx) -> None:
     """Tables live inside the version's .duckdb; they have no own storage path."""
-    body = local_client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_BYTES, "text/csv")},
-    ).json()
-    for table in body["dataset_tables"]:
-        assert table["storage_path"] is None, (
-            f"Expected table.storage_path=None, got {table['storage_path']!r}"
-        )
+    client, repos, backend = local_ctx
+    version, _ = _upload_and_run(client, repos, backend)
+    tables = repos.dataset_table.list_by_version(version.dataset_version_id)
+    for table in tables:
+        assert table.storage_path is None, f"Expected table.storage_path=None, got {table.storage_path!r}"
 
 
-def test_raw_upload_stored_separately_from_duckdb(local_client: TestClient) -> None:
+def test_raw_upload_stored_separately_from_duckdb(local_ctx) -> None:
     """raw_upload_path and version_path must be different storage keys."""
-    body = local_client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_BYTES, "text/csv")},
-    ).json()
-    raw_path = body["uploaded_file"]["storage_path"]
-    ver_path = body["dataset_version"]["storage_path"]
-    assert raw_path != ver_path
+    client, repos, backend = local_ctx
+    version, uploaded_file = _upload_and_run(client, repos, backend)
+    assert uploaded_file.storage_path != version.storage_path
 
 
 # ---------------------------------------------------------------------------
@@ -162,59 +161,45 @@ def test_raw_upload_stored_separately_from_duckdb(local_client: TestClient) -> N
 # ---------------------------------------------------------------------------
 
 def test_upload_with_fake_backend_writes_no_local_files(
-    fake_client: TestClient, tmp_path: Path
+    fake_ctx, tmp_path: Path
 ) -> None:
-    """When using an in-memory storage backend, the upload must not write any
-    persistent files to the local filesystem."""
+    """When using an in-memory storage backend, no persistent files hit the local filesystem."""
+    from app.worker.runner import run_one  # noqa: PLC0415
+    client, repos, fake = fake_ctx
     before = set(tmp_path.rglob("*"))
-    fake_client.post(
+    client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
         files={"file": ("simple_sales.csv", CSV_BYTES, "text/csv")},
     )
+    run_one(repos.job, repos, storage=fake, llm=None)
     after = set(tmp_path.rglob("*"))
-    new_files = after - before
-    # temp DuckDB scratch files are cleaned up; no new persistent files should remain
-    assert not new_files, f"Unexpected local files written: {new_files}"
+    assert not (after - before), f"Unexpected local files: {after - before}"
 
 
 def test_profile_with_fake_backend_writes_no_local_files(
-    fake_client: TestClient, tmp_path: Path
+    fake_ctx, tmp_path: Path
 ) -> None:
-    upload = fake_client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_BYTES, "text/csv")},
-    ).json()
-    dataset_id = upload["dataset"]["dataset_id"]
-    version_id = upload["dataset_version"]["dataset_version_id"]
+    from app.worker.runner import run_one  # noqa: PLC0415
+    client, repos, fake = fake_ctx
+    _upload_and_run(client, repos, fake)
+    version = list(repos.dataset_version._store.values())[0]
 
     before = set(tmp_path.rglob("*"))
-    resp = fake_client.post(f"/datasets/{dataset_id}/versions/{version_id}/profile")
-    assert resp.status_code == 200
+    client.post(f"/datasets/{version.dataset_id}/versions/{version.dataset_version_id}/profile")
+    run_one(repos.job, repos, storage=fake, llm=None)
     after = set(tmp_path.rglob("*"))
-    new_files = after - before
-    assert not new_files, f"Unexpected local files written during profiling: {new_files}"
+    assert not (after - before), f"Unexpected local files written during profiling: {after - before}"
 
 
-def test_fake_backend_holds_both_artifacts_in_memory() -> None:
+def test_fake_backend_holds_both_artifacts_in_memory(fake_ctx) -> None:
     """Both the raw upload and .duckdb version artifact are in the fake store."""
-    fake = FakeStorageBackend()
-    fresh = Repos()
-    app.dependency_overrides[get_repos] = lambda: fresh
-    app.dependency_overrides[get_storage] = lambda: fake
-    try:
-        body = TestClient(app).post(
-            f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-            files={"file": ("simple_sales.csv", CSV_BYTES, "text/csv")},
-        ).json()
-        raw_path = body["uploaded_file"]["storage_path"]
-        ver_path = body["dataset_version"]["storage_path"]
-        assert fake.exists(raw_path), "Raw upload must be in fake store"
-        assert fake.exists(ver_path), ".duckdb version artifact must be in fake store"
-        duckdb_bytes = fake.read(ver_path)
-        # DuckDB 1.x file header (first 4 bytes of the block header)
-        _DUCKDB_MAGIC = bytes.fromhex("063187b8")
-        assert duckdb_bytes[:4] == _DUCKDB_MAGIC, (
-            f"Stored artifact must be a valid DuckDB file, got: {duckdb_bytes[:4].hex()}"
-        )
-    finally:
-        app.dependency_overrides.clear()
+    client, repos, fake = fake_ctx
+    version, uploaded_file = _upload_and_run(client, repos, fake)
+
+    assert fake.exists(uploaded_file.storage_path), "Raw upload must be in fake store"
+    assert fake.exists(version.storage_path), ".duckdb version artifact must be in fake store"
+    duckdb_bytes = fake.read(version.storage_path)
+    _DUCKDB_MAGIC = bytes.fromhex("063187b8")
+    assert duckdb_bytes[:4] == _DUCKDB_MAGIC, (
+        f"Stored artifact must be a valid DuckDB file, got: {duckdb_bytes[:4].hex()}"
+    )

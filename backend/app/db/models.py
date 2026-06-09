@@ -244,3 +244,23 @@ class VisualizationResultModel(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     result_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class JobModel(Base):
+    __tablename__ = "jobs"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("workspaces.workspace_id"), nullable=False)
+    dataset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("datasets.dataset_id"))
+    input_dataset_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("dataset_versions.dataset_version_id"))
+    job_type: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
+    payload_json: Mapped[dict | None] = mapped_column(JSONB)
+    result_type: Mapped[str | None] = mapped_column(Text)
+    result_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    output_dataset_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("dataset_versions.dataset_version_id"))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    progress_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))

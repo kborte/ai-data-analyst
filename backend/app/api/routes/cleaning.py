@@ -8,12 +8,12 @@ from app.dependencies import Repos, get_llm_provider, get_repos
 from app.tools.llm.provider import LLMProvider
 from app.schemas.cleaning import (
     CleaningDecisionItem,
-    CleaningDecisions,
     CleaningDecisionsJson,
     CleaningPlan,
     CleaningResult,
 )
-from app.services.cleaning_execution_service import CleaningExecutionService
+from app.schemas.common import JobStatus, JobType
+from app.schemas.job import Job
 from app.services.cleaning_plan_service import CleaningPlanService
 from app.tools.data.cleaning_decision_resolver import resolve_decisions
 
@@ -113,38 +113,34 @@ def validate_decisions(
 
 @router.post(
     "/cleaning-plans/{cleaning_plan_id}/execute",
-    response_model=CleaningResult,
+    response_model=Job,
     status_code=201,
 )
 def execute_cleaning_plan(
     cleaning_plan_id: UUID,
     body: ExecuteCleaningPlanRequest,
     repos: Repos = Depends(get_repos),
-) -> CleaningResult:
-    decisions = CleaningDecisions(
-        cleaning_decisions_id=uuid4(),
-        cleaning_plan_id=cleaning_plan_id,
-        decided_by_user_id=body.executed_by_user_id,
-        decisions_json=CleaningDecisionsJson(decisions=body.decisions),
+) -> Job:
+    plan = repos.cleaning_plan.get(cleaning_plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"CleaningPlan {cleaning_plan_id} not found.")
+
+    job = Job(
+        job_id=uuid4(),
+        workspace_id=body.workspace_id,
+        dataset_id=body.dataset_id,
+        input_dataset_version_id=body.input_dataset_version_id,
+        job_type=JobType.execute_cleaning,
+        status=JobStatus.queued,
+        payload_json={
+            "cleaning_plan_id": str(cleaning_plan_id),
+            "decisions_id": str(uuid4()),
+            "executed_by_user_id": str(body.executed_by_user_id),
+            "decisions": [d.model_dump() for d in body.decisions],
+        },
         created_at=datetime.now(tz=UTC),
     )
-    service = CleaningExecutionService(
-        repos.dataset_version,
-        repos.dataset_table,
-        repos.cleaning_plan,
-        repos.cleaning_result,
-    )
-    try:
-        return service.execute_cleaning_plan(
-            workspace_id=body.workspace_id,
-            dataset_id=body.dataset_id,
-            input_dataset_version_id=body.input_dataset_version_id,
-            cleaning_plan_id=cleaning_plan_id,
-            decisions=decisions,
-            executed_by_user_id=body.executed_by_user_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return repos.job.save(job)
 
 
 @router.get("/cleaning-results/{cleaning_result_id}", response_model=CleaningResult)

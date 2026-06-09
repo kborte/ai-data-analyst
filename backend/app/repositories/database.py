@@ -21,10 +21,12 @@ from app.db.models import (
     FeatureDecisionsModel,
     FeaturePlanModel,
     FeatureResultModel,
+    JobModel,
     UploadedFileModel,
     VisualizationPlanModel,
     VisualizationResultModel,
 )
+from app.schemas.job import Job
 from app.schemas.cleaning import (
     CleaningDecisions,
     CleaningDecisionsJson,
@@ -790,3 +792,90 @@ class VisualizationResultRepository:
             .all()
         )
         return [_visualization_result_from_orm(r) for r in rows]
+
+
+def _job_from_orm(row: JobModel) -> Job:
+    return Job(
+        job_id=row.job_id,
+        workspace_id=row.workspace_id,
+        dataset_id=row.dataset_id,
+        input_dataset_version_id=row.input_dataset_version_id,
+        job_type=row.job_type,
+        status=row.status,
+        payload_json=row.payload_json or {},
+        result_type=row.result_type,
+        result_id=row.result_id,
+        output_dataset_version_id=row.output_dataset_version_id,
+        error_message=row.error_message,
+        progress_message=row.progress_message,
+        created_at=row.created_at,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+    )
+
+
+class JobRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, obj: Job) -> Job:
+        row = JobModel(
+            job_id=obj.job_id,
+            workspace_id=obj.workspace_id,
+            dataset_id=obj.dataset_id,
+            input_dataset_version_id=obj.input_dataset_version_id,
+            job_type=str(obj.job_type),
+            status=str(obj.status),
+            payload_json=obj.payload_json,
+            result_type=obj.result_type,
+            result_id=obj.result_id,
+            output_dataset_version_id=obj.output_dataset_version_id,
+            error_message=obj.error_message,
+            progress_message=obj.progress_message,
+            created_at=obj.created_at,
+            started_at=obj.started_at,
+            completed_at=obj.completed_at,
+        )
+        merged = self._session.merge(row)
+        self._session.commit()
+        return _job_from_orm(merged)
+
+    def get(self, job_id: UUID) -> Job | None:
+        row = self._session.get(JobModel, job_id)
+        return _job_from_orm(row) if row else None
+
+    def list_by_dataset(self, dataset_id: UUID) -> list[Job]:
+        rows = (
+            self._session.query(JobModel)
+            .filter(JobModel.dataset_id == dataset_id)
+            .order_by(JobModel.created_at.desc())
+            .all()
+        )
+        return [_job_from_orm(r) for r in rows]
+
+    def list_by_workspace(self, workspace_id: UUID) -> list[Job]:
+        rows = (
+            self._session.query(JobModel)
+            .filter(JobModel.workspace_id == workspace_id)
+            .order_by(JobModel.created_at.desc())
+            .all()
+        )
+        return [_job_from_orm(r) for r in rows]
+
+    def claim_next_queued(self) -> Job | None:
+        """Atomically claim the oldest queued job using SELECT FOR UPDATE SKIP LOCKED."""
+        from sqlalchemy import text  # noqa: PLC0415
+        row = (
+            self._session.query(JobModel)
+            .filter(JobModel.status == "queued")
+            .order_by(JobModel.created_at)
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+        if row is None:
+            return None
+        row.status = "running"
+        from datetime import datetime, timezone  # noqa: PLC0415
+        row.started_at = datetime.now(tz=timezone.utc)
+        self._session.commit()
+        return _job_from_orm(row)

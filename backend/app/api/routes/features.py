@@ -6,13 +6,12 @@ from pydantic import BaseModel
 
 from app.dependencies import Repos, get_llm_provider, get_repos
 from app.tools.llm.provider import LLMProvider
+from app.schemas.common import JobStatus, JobType
 from app.schemas.features import (
     FeatureDecisionItem,
-    FeatureDecisions,
-    FeatureDecisionsJson,
     FeaturePlan,
-    FeatureResult,
 )
+from app.schemas.job import Job
 from app.services.feature_service import DecisionValidation, FeatureService
 
 router = APIRouter()
@@ -96,7 +95,7 @@ def validate_feature_decisions(
 
 @router.post(
     "/feature-plans/{feature_plan_id}/execute",
-    response_model=FeatureResult,
+    response_model=Job,
     status_code=201,
 )
 def execute_feature_plan(
@@ -104,22 +103,24 @@ def execute_feature_plan(
     body: ExecuteFeaturePlanRequest,
     repos: Repos = Depends(get_repos),
     llm: LLMProvider = Depends(get_llm_provider),
-) -> FeatureResult:
-    decisions = FeatureDecisions(
-        feature_decisions_id=uuid4(),
-        feature_plan_id=feature_plan_id,
-        decided_by_user_id=body.executed_by_user_id,
-        decisions_json=FeatureDecisionsJson(decisions=body.decisions),
+) -> Job:
+    plan = repos.feature_plan.get(feature_plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"FeaturePlan {feature_plan_id} not found.")
+
+    job = Job(
+        job_id=uuid4(),
+        workspace_id=body.workspace_id,
+        dataset_id=body.dataset_id,
+        input_dataset_version_id=body.input_dataset_version_id,
+        job_type=JobType.execute_features,
+        status=JobStatus.queued,
+        payload_json={
+            "feature_plan_id": str(feature_plan_id),
+            "decisions_id": str(uuid4()),
+            "executed_by_user_id": str(body.executed_by_user_id),
+            "decisions": [d.model_dump() for d in body.decisions],
+        },
         created_at=datetime.now(tz=UTC),
     )
-    try:
-        return _service(repos, llm).execute_feature_plan(
-            workspace_id=body.workspace_id,
-            dataset_id=body.dataset_id,
-            input_dataset_version_id=body.input_dataset_version_id,
-            feature_plan_id=feature_plan_id,
-            decisions=decisions,
-            executed_by_user_id=body.executed_by_user_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return repos.job.save(job)

@@ -163,11 +163,11 @@ def test_validate_blocks_missing_approval(ctx) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Generate route creates VisualizationResult with chart specs
+# 3. Generate route creates queued job
 # ---------------------------------------------------------------------------
 
 
-def test_generate_creates_visualization_result(ctx) -> None:
+def test_generate_creates_queued_job(ctx) -> None:
     client, repos, tmp_path = ctx
     version_id = _seed_version_with_csv(repos, tmp_path)
     plan_id, viz_id = _seed_visualization_plan(repos, version_id)
@@ -182,18 +182,54 @@ def test_generate_creates_visualization_result(ctx) -> None:
 
     assert resp.status_code == 201
     body = resp.json()
-    assert "visualization_result_id" in body
-    assert body["status"] == "completed"
-    assert len(body["chart_specs"]) == 1
-    assert body["chart_specs"][0]["chart_type"] == "line"
+    assert "job_id" in body
+    assert body["status"] == "queued"
+    assert body["job_type"] == "generate_visualizations"
 
 
 # ---------------------------------------------------------------------------
-# 4. Generate skips rejected charts
+# 4. Worker creates VisualizationResult with chart specs
 # ---------------------------------------------------------------------------
 
 
-def test_generate_skips_rejected_charts(ctx) -> None:
+def test_worker_creates_visualization_result(ctx) -> None:
+    from uuid import UUID
+    from app.worker.runner import run_one
+
+    client, repos, tmp_path = ctx
+    version_id = _seed_version_with_csv(repos, tmp_path)
+    plan_id, viz_id = _seed_visualization_plan(repos, version_id)
+
+    resp = client.post(
+        f"/visualization-plans/{plan_id}/generate",
+        json={
+            "generated_by_user_id": str(_USER_ID),
+            "decisions": [{"visualization_id": str(viz_id), "decision": "approve"}],
+        },
+    )
+    job_id = UUID(resp.json()["job_id"])
+    run_one(repos.job, repos, storage=None, llm=None)
+
+    job = repos.job.get(job_id)
+    assert job.status == "completed"
+    assert job.result_type == "visualization_result"
+    assert job.result_id is not None
+
+    result = repos.visualization_result.get(job.result_id)
+    assert result is not None
+    assert len(result.chart_specs) == 1
+    assert result.chart_specs[0].chart_type == "line"
+
+
+# ---------------------------------------------------------------------------
+# 5. Worker skips rejected charts
+# ---------------------------------------------------------------------------
+
+
+def test_worker_skips_rejected_charts(ctx) -> None:
+    from uuid import UUID
+    from app.worker.runner import run_one
+
     client, repos, tmp_path = ctx
     version_id = _seed_version_with_csv(repos, tmp_path)
     plan_id, viz_id = _seed_visualization_plan(repos, version_id)
@@ -205,31 +241,36 @@ def test_generate_skips_rejected_charts(ctx) -> None:
             "decisions": [{"visualization_id": str(viz_id), "decision": "reject"}],
         },
     )
+    job_id = UUID(resp.json()["job_id"])
+    run_one(repos.job, repos, storage=None, llm=None)
 
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["status"] == "completed"
-    assert body["chart_specs"] == []
+    job = repos.job.get(job_id)
+    assert job.status == "completed"
+    result = repos.visualization_result.get(job.result_id)
+    assert result.chart_specs == []
 
 
 # ---------------------------------------------------------------------------
-# 5. Generate does not create a new DatasetVersion
+# 6. Generate does not create a new DatasetVersion
 # ---------------------------------------------------------------------------
 
 
 def test_generate_does_not_create_new_dataset_version(ctx) -> None:
+    from app.worker.runner import run_one
+
     client, repos, tmp_path = ctx
     version_id = _seed_version_with_csv(repos, tmp_path)
     plan_id, viz_id = _seed_visualization_plan(repos, version_id)
     versions_before = len(repos.dataset_version._store)
 
-    client.post(
+    resp = client.post(
         f"/visualization-plans/{plan_id}/generate",
         json={
             "generated_by_user_id": str(_USER_ID),
             "decisions": [{"visualization_id": str(viz_id), "decision": "approve"}],
         },
     )
+    run_one(repos.job, repos, storage=None, llm=None)
 
     assert len(repos.dataset_version._store) == versions_before
     assert repos.dataset_version.get(version_id) is not None

@@ -163,3 +163,19 @@ class ExecutionStatus(StrEnum):
     skipped = "skipped"
     failed = "failed"
     partial = "partial"
+
+
+class JobType(StrEnum):
+    upload_import = "upload_import"
+    profile_dataset = "profile_dataset"
+    execute_cleaning = "execute_cleaning"
+    execute_features = "execute_features"
+    generate_visualizations = "generate_visualizations"
+
+
+class JobStatus(StrEnum):
+    queued = "queued"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"

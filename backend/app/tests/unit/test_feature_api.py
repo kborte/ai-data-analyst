@@ -152,11 +152,11 @@ def test_validate_blocks_missing_approval(ctx):
 
 
 # ---------------------------------------------------------------------------
-# 3. Execute route creates FeatureResult
+# 3. Execute route creates queued job
 # ---------------------------------------------------------------------------
 
 
-def test_execute_creates_feature_result(ctx):
+def test_execute_creates_queued_job(ctx):
     client, repos, tmp_path = ctx
     version_id = _seed_version_with_csv(repos, tmp_path)
     plan_id, feature_id = _seed_plan_with_aov(repos, version_id)
@@ -174,16 +174,19 @@ def test_execute_creates_feature_result(ctx):
 
     assert resp.status_code == 201
     body = resp.json()
-    assert "feature_result_id" in body
-    assert body["status"] == "completed"
+    assert "job_id" in body
+    assert body["status"] == "queued"
+    assert body["job_type"] == "execute_features"
 
 
 # ---------------------------------------------------------------------------
-# 4. Execute route creates enriched DatasetVersion
+# 4. Worker creates FeatureResult and enriched DatasetVersion
 # ---------------------------------------------------------------------------
 
 
-def test_execute_creates_enriched_dataset_version(ctx):
+def test_worker_creates_feature_result_and_version(ctx):
+    from app.worker.runner import run_one
+
     client, repos, tmp_path = ctx
     version_id = _seed_version_with_csv(repos, tmp_path)
     plan_id, feature_id = _seed_plan_with_aov(repos, version_id)
@@ -198,9 +201,16 @@ def test_execute_creates_enriched_dataset_version(ctx):
             "decisions": [{"feature_id": str(feature_id), "decision": "approve"}],
         },
     )
+    job_id = uuid.UUID(resp.json()["job_id"])
+    run_one(repos.job, repos, storage=None, llm=None)
 
-    out_id = uuid.UUID(resp.json()["output_dataset_version_id"])
-    out_version = repos.dataset_version.get(out_id)
+    job = repos.job.get(job_id)
+    assert job.status == "completed"
+    assert job.result_type == "feature_result"
+    assert job.result_id is not None
+    assert job.output_dataset_version_id is not None
+
+    out_version = repos.dataset_version.get(job.output_dataset_version_id)
     assert out_version is not None
     assert out_version.version_type == DatasetVersionType.enriched
 
@@ -211,13 +221,15 @@ def test_execute_creates_enriched_dataset_version(ctx):
 
 
 def test_execute_does_not_mutate_previous_version(ctx):
+    from app.worker.runner import run_one
+
     client, repos, tmp_path = ctx
     version_id = _seed_version_with_csv(repos, tmp_path)
     csv_path = tmp_path / "orders.csv"
     original_bytes = csv_path.read_bytes()
     plan_id, feature_id = _seed_plan_with_aov(repos, version_id)
 
-    client.post(
+    resp = client.post(
         f"/feature-plans/{plan_id}/execute",
         json={
             "workspace_id": str(uuid.uuid4()),
@@ -227,6 +239,7 @@ def test_execute_does_not_mutate_previous_version(ctx):
             "decisions": [{"feature_id": str(feature_id), "decision": "approve"}],
         },
     )
+    run_one(repos.job, repos, storage=None, llm=None)
 
     assert csv_path.read_bytes() == original_bytes
     assert repos.dataset_version.get(version_id) is not None

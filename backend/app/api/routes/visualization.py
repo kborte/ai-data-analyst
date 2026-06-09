@@ -6,12 +6,11 @@ from pydantic import BaseModel
 
 from app.dependencies import Repos, get_llm_provider, get_repos
 from app.tools.llm.provider import LLMProvider
+from app.schemas.common import JobStatus, JobType
+from app.schemas.job import Job
 from app.schemas.visualization import (
     VisualizationDecisionItem,
-    VisualizationDecisions,
-    VisualizationDecisionsJson,
     VisualizationPlan,
-    VisualizationResult,
 )
 from app.services.visualization_service import DecisionValidation, VisualizationService
 
@@ -94,7 +93,7 @@ def validate_visualization_decisions(
 
 @router.post(
     "/visualization-plans/{visualization_plan_id}/generate",
-    response_model=VisualizationResult,
+    response_model=Job,
     status_code=201,
 )
 def generate_visualization(
@@ -102,15 +101,32 @@ def generate_visualization(
     body: GenerateVisualizationRequest,
     repos: Repos = Depends(get_repos),
     llm: LLMProvider = Depends(get_llm_provider),
-) -> VisualizationResult:
-    decisions = VisualizationDecisions(
-        visualization_decisions_id=uuid4(),
-        visualization_plan_id=visualization_plan_id,
-        decided_by_user_id=body.generated_by_user_id,
-        decisions_json=VisualizationDecisionsJson(decisions=body.decisions),
+) -> Job:
+    plan = repos.visualization_plan.get(visualization_plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail=f"VisualizationPlan {visualization_plan_id} not found.")
+
+    dataset_version = repos.dataset_version.get(plan.dataset_version_id)
+    dataset_id = dataset_version.dataset_id if dataset_version else None
+    workspace_id_val = uuid4()
+    if dataset_id:
+        ds = repos.dataset.get(dataset_id)
+        if ds:
+            workspace_id_val = ds.workspace_id
+
+    job = Job(
+        job_id=uuid4(),
+        workspace_id=workspace_id_val,
+        dataset_id=dataset_id,
+        input_dataset_version_id=plan.dataset_version_id,
+        job_type=JobType.generate_visualizations,
+        status=JobStatus.queued,
+        payload_json={
+            "visualization_plan_id": str(visualization_plan_id),
+            "decisions_id": str(uuid4()),
+            "generated_by_user_id": str(body.generated_by_user_id),
+            "decisions": [d.model_dump() for d in body.decisions],
+        },
         created_at=datetime.now(tz=UTC),
     )
-    try:
-        return _service(repos, llm).generate(visualization_plan_id, decisions)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return repos.job.save(job)

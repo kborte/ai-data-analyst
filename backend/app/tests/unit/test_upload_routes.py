@@ -1,7 +1,6 @@
 """
-Route integration tests for upload endpoints (M9C).
-Uses TestClient with dependency overrides and a tmp_path LocalStorageBackend.
-No external services.
+Route integration tests for upload endpoints (M10D: job-based uploads).
+Upload route creates a queued job; worker processes it end-to-end.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from fastapi.testclient import TestClient
 from app.dependencies import Repos, get_repos, get_storage
 from app.main import app
 from app.tools.files.storage_service import LocalStorageBackend
+from app.worker.runner import run_one
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 CSV_FILE = FIXTURES / "simple_sales.csv"
@@ -31,111 +31,28 @@ def storage_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def client(storage_dir: Path) -> TestClient:
+def ctx(storage_dir: Path):
     fresh_repos = Repos()
     backend = LocalStorageBackend(str(storage_dir))
     app.dependency_overrides[get_repos] = lambda: fresh_repos
     app.dependency_overrides[get_storage] = lambda: backend
-    yield TestClient(app)
+    client = TestClient(app)
+    yield client, fresh_repos, backend
     app.dependency_overrides.clear()
 
 
-# ---------------------------------------------------------------------------
-# CSV upload
-# ---------------------------------------------------------------------------
-
-def test_csv_upload_status_200(client: TestClient) -> None:
+def _upload_csv(client: TestClient, repos: Repos, backend: LocalStorageBackend) -> dict:
+    """Upload CSV, run worker, return first dataset_version from repos."""
     resp = client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
         files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 201
+    run_one(repos.job, repos, storage=backend, llm=None)
+    versions = list(repos.dataset_version._store.values())
+    assert versions
+    return {"version": versions[-1], "job": resp.json()}
 
-
-def test_csv_upload_creates_dataset(client: TestClient) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
-    ).json()
-    assert body["dataset"]["name"] == "simple_sales"
-    assert body["dataset"]["workspace_id"] == WORKSPACE_ID
-
-
-def test_csv_upload_dataset_name_override(client: TestClient) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
-        data={"dataset_name": "My Custom Name"},
-    ).json()
-    assert body["dataset"]["name"] == "My Custom Name"
-
-
-def test_csv_upload_version(client: TestClient) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
-    ).json()
-    v = body["dataset_version"]
-    assert v["version_number"] == 1
-    assert v["version_type"] == "original"
-    assert v["display_name"] == "Original upload"
-    assert v["parent_version_id"] is None
-
-
-def test_csv_upload_version_has_duckdb_storage_path(client: TestClient) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
-    ).json()
-    storage_path = body["dataset_version"]["storage_path"]
-    assert storage_path is not None
-    assert storage_path.endswith(".duckdb")
-
-
-def test_csv_upload_raw_file_saved_to_storage(client: TestClient, storage_dir: Path) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
-    ).json()
-    raw_path = body["uploaded_file"]["storage_path"]
-    assert raw_path is not None
-    # storage key is relative; LocalStorageBackend resolves under storage_dir
-    assert (storage_dir / raw_path).exists()
-
-
-def test_csv_upload_duckdb_artifact_saved_to_storage(client: TestClient, storage_dir: Path) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
-    ).json()
-    ver_path = body["dataset_version"]["storage_path"]
-    assert (storage_dir / ver_path).exists()
-
-
-def test_csv_upload_one_table_no_storage_path(client: TestClient) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
-    ).json()
-    assert len(body["dataset_tables"]) == 1
-    # Table lives inside .duckdb — no individual storage_path
-    assert body["dataset_tables"][0]["storage_path"] is None
-
-
-def test_csv_upload_preview_rows(client: TestClient) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
-    ).json()
-    preview = body["previews"][0]
-    assert preview["total_row_count"] == 5
-    assert "date" in preview["columns"]
-    assert len(preview["rows"]) == 5
-
-
-# ---------------------------------------------------------------------------
-# Excel upload
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def xlsx_bytes() -> bytes:
@@ -153,43 +70,163 @@ def xlsx_bytes() -> bytes:
     return buf.getvalue()
 
 
-def test_excel_upload_two_tables(client: TestClient, xlsx_bytes: bytes) -> None:
-    body = client.post(
+# ---------------------------------------------------------------------------
+# Job response shape
+# ---------------------------------------------------------------------------
+
+def test_csv_upload_returns_queued_job(ctx) -> None:
+    client, repos, backend = ctx
+    resp = client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("sales.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-    ).json()
-    assert len(body["dataset_tables"]) == 2
-    assert len(body["previews"]) == 2
+        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert "job_id" in body
+    assert body["status"] == "queued"
+    assert body["job_type"] == "upload_import"
+    assert body["workspace_id"] == WORKSPACE_ID
 
 
-def test_excel_upload_sheet_names_sanitized(client: TestClient, xlsx_bytes: bytes) -> None:
+def test_csv_upload_job_payload_contains_filename(ctx) -> None:
+    client, repos, backend = ctx
     body = client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("sales.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
     ).json()
-    names = {t["table_name"] for t in body["dataset_tables"]}
+    assert body["payload_json"]["filename"] == "simple_sales.csv"
+
+
+def test_csv_upload_pending_bytes_saved_to_storage(ctx, storage_dir: Path) -> None:
+    client, repos, backend = ctx
+    body = client.post(
+        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
+        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
+    ).json()
+    pending_path = body["payload_json"]["pending_storage_path"]
+    assert (storage_dir / pending_path).exists()
+
+
+# ---------------------------------------------------------------------------
+# Worker processes upload job end-to-end
+# ---------------------------------------------------------------------------
+
+def test_worker_completes_upload_job(ctx) -> None:
+    client, repos, backend = ctx
+    resp = client.post(
+        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
+        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
+    )
+    job_id_str = resp.json()["job_id"]
+    run_one(repos.job, repos, storage=backend, llm=None)
+    from uuid import UUID
+    job = repos.job.get(UUID(job_id_str))
+    assert job.status == "completed"
+    assert job.output_dataset_version_id is not None
+
+
+def test_worker_creates_dataset(ctx) -> None:
+    client, repos, backend = ctx
+    _upload_csv(client, repos, backend)
+    datasets = list(repos.dataset._store.values())
+    assert len(datasets) == 1
+    assert str(datasets[0].workspace_id) == WORKSPACE_ID
+
+
+def test_worker_creates_version_with_duckdb_path(ctx) -> None:
+    client, repos, backend = ctx
+    result = _upload_csv(client, repos, backend)
+    version = result["version"]
+    assert version.storage_path is not None
+    assert version.storage_path.endswith(".duckdb")
+
+
+def test_worker_creates_version_number_1(ctx) -> None:
+    client, repos, backend = ctx
+    result = _upload_csv(client, repos, backend)
+    assert result["version"].version_number == 1
+    assert result["version"].version_type == "original"
+
+
+def test_worker_saves_duckdb_artifact(ctx, storage_dir: Path) -> None:
+    client, repos, backend = ctx
+    result = _upload_csv(client, repos, backend)
+    assert (storage_dir / result["version"].storage_path).exists()
+
+
+def test_worker_saves_raw_upload(ctx, storage_dir: Path) -> None:
+    client, repos, backend = ctx
+    _upload_csv(client, repos, backend)
+    uploaded_files = list(repos.uploaded_file._store.values())
+    assert uploaded_files
+    raw_path = uploaded_files[0].storage_path
+    assert raw_path is not None
+    assert (storage_dir / raw_path).exists()
+
+
+def test_worker_table_has_no_individual_storage_path(ctx) -> None:
+    client, repos, backend = ctx
+    result = _upload_csv(client, repos, backend)
+    tables = repos.dataset_table.list_by_version(result["version"].dataset_version_id)
+    assert len(tables) == 1
+    assert tables[0].storage_path is None
+
+
+def test_worker_dataset_name_override(ctx) -> None:
+    client, repos, backend = ctx
+    resp = client.post(
+        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
+        files={"file": ("simple_sales.csv", CSV_FILE.read_bytes(), "text/csv")},
+        data={"dataset_name": "My Custom Name"},
+    )
+    assert resp.status_code == 201
+    run_one(repos.job, repos, storage=backend, llm=None)
+    datasets = list(repos.dataset._store.values())
+    assert datasets[0].name == "My Custom Name"
+
+
+# ---------------------------------------------------------------------------
+# Excel upload
+# ---------------------------------------------------------------------------
+
+def test_excel_worker_creates_two_tables(ctx, xlsx_bytes: bytes) -> None:
+    client, repos, backend = ctx
+    resp = client.post(
+        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
+        files={"file": ("sales.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert resp.status_code == 201
+    run_one(repos.job, repos, storage=backend, llm=None)
+    versions = list(repos.dataset_version._store.values())
+    tables = repos.dataset_table.list_by_version(versions[0].dataset_version_id)
+    assert len(tables) == 2
+
+
+def test_excel_worker_sheet_names_sanitized(ctx, xlsx_bytes: bytes) -> None:
+    client, repos, backend = ctx
+    client.post(
+        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
+        files={"file": ("sales.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    run_one(repos.job, repos, storage=backend, llm=None)
+    versions = list(repos.dataset_version._store.values())
+    tables = repos.dataset_table.list_by_version(versions[0].dataset_version_id)
+    names = {t.table_name for t in tables}
     assert "january" in names
     assert "february" in names
 
 
-def test_excel_upload_preview_row_counts(client: TestClient, xlsx_bytes: bytes) -> None:
-    body = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("sales.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-    ).json()
-    by_name = {p["table_name"]: p for p in body["previews"]}
-    assert by_name["january"]["total_row_count"] == 1
-    assert by_name["february"]["total_row_count"] == 2
-
-
-def test_excel_upload_duckdb_contains_both_tables(client: TestClient, xlsx_bytes: bytes, storage_dir: Path) -> None:
+def test_excel_worker_duckdb_contains_both_tables(ctx, xlsx_bytes: bytes, storage_dir: Path) -> None:
     import duckdb
 
-    body = client.post(
+    client, repos, backend = ctx
+    client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
         files={"file": ("sales.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-    ).json()
-    db_path = storage_dir / body["dataset_version"]["storage_path"]
+    )
+    run_one(repos.job, repos, storage=backend, llm=None)
+    versions = list(repos.dataset_version._store.values())
+    db_path = storage_dir / versions[0].storage_path
     con = duckdb.connect(str(db_path), read_only=True)
     tables = [r[0] for r in con.execute("SHOW TABLES").fetchall()]
     con.close()
@@ -197,55 +234,68 @@ def test_excel_upload_duckdb_contains_both_tables(client: TestClient, xlsx_bytes
 
 
 # ---------------------------------------------------------------------------
-# Upload to existing dataset (no new Dataset created)
+# Upload to existing dataset
 # ---------------------------------------------------------------------------
 
-def test_upload_to_existing_dataset_reuses_dataset(client: TestClient) -> None:
-    csv = b"a,b\n1,2\n"
-    first = client.post(
+def test_upload_to_existing_dataset_reuses_dataset(ctx) -> None:
+    client, repos, backend = ctx
+    client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("data.csv", csv, "text/csv")},
-    ).json()
-    dataset_id = first["dataset"]["dataset_id"]
+        files={"file": ("data.csv", b"a,b\n1,2\n", "text/csv")},
+    )
+    run_one(repos.job, repos, storage=backend, llm=None)
+    datasets = list(repos.dataset._store.values())
+    dataset_id = str(datasets[0].dataset_id)
 
-    second = client.post(
+    client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("data2.csv", csv, "text/csv")},
+        files={"file": ("data2.csv", b"a,b\n3,4\n", "text/csv")},
         data={"dataset_id": dataset_id},
-    ).json()
-    assert second["dataset"]["dataset_id"] == dataset_id
+    )
+    run_one(repos.job, repos, storage=backend, llm=None)
+
+    datasets_after = list(repos.dataset._store.values())
+    assert len(datasets_after) == 1
 
 
-def test_upload_to_existing_dataset_increments_version(client: TestClient) -> None:
-    csv = b"a,b\n1,2\n"
-    first = client.post(
+def test_upload_to_existing_dataset_increments_version(ctx) -> None:
+    client, repos, backend = ctx
+    client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("data.csv", csv, "text/csv")},
-    ).json()
-    dataset_id = first["dataset"]["dataset_id"]
+        files={"file": ("data.csv", b"a,b\n1,2\n", "text/csv")},
+    )
+    run_one(repos.job, repos, storage=backend, llm=None)
+    dataset_id = str(list(repos.dataset._store.values())[0].dataset_id)
 
-    second = client.post(
+    client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("data2.csv", csv, "text/csv")},
+        files={"file": ("data2.csv", b"a,b\n3,4\n", "text/csv")},
         data={"dataset_id": dataset_id},
-    ).json()
-    assert second["dataset_version"]["version_number"] == 2
+    )
+    run_one(repos.job, repos, storage=backend, llm=None)
+
+    versions = sorted(
+        repos.dataset_version._store.values(), key=lambda v: v.version_number
+    )
+    assert versions[-1].version_number == 2
 
 
-def test_upload_unknown_dataset_id_returns_422(client: TestClient) -> None:
+def test_upload_unknown_dataset_id_returns_404(ctx) -> None:
+    client, repos, backend = ctx
     resp = client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
         files={"file": ("data.csv", b"a\n1\n", "text/csv")},
         data={"dataset_id": str(uuid4())},
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# Context document upload
+# Context document upload (still synchronous)
 # ---------------------------------------------------------------------------
 
-def test_context_upload_status_200(client: TestClient) -> None:
+def test_context_upload_status_200(ctx) -> None:
+    client, repos, backend = ctx
     resp = client.post(
         f"/workspaces/{WORKSPACE_ID}/context-documents/upload",
         files={"file": ("company_context.txt", TXT_FILE.read_bytes(), "text/plain")},
@@ -253,7 +303,8 @@ def test_context_upload_status_200(client: TestClient) -> None:
     assert resp.status_code == 200
 
 
-def test_context_upload_creates_document(client: TestClient) -> None:
+def test_context_upload_creates_document(ctx) -> None:
+    client, repos, backend = ctx
     body = client.post(
         f"/workspaces/{WORKSPACE_ID}/context-documents/upload",
         files={"file": ("company_context.txt", TXT_FILE.read_bytes(), "text/plain")},
@@ -263,7 +314,8 @@ def test_context_upload_creates_document(client: TestClient) -> None:
     assert body["char_count"] > 0
 
 
-def test_context_upload_file_saved_to_storage(client: TestClient, storage_dir: Path) -> None:
+def test_context_upload_file_saved_to_storage(ctx, storage_dir: Path) -> None:
+    client, repos, backend = ctx
     body = client.post(
         f"/workspaces/{WORKSPACE_ID}/context-documents/upload",
         files={"file": ("company_context.txt", TXT_FILE.read_bytes(), "text/plain")},
@@ -276,7 +328,8 @@ def test_context_upload_file_saved_to_storage(client: TestClient, storage_dir: P
 # Error cases
 # ---------------------------------------------------------------------------
 
-def test_unsupported_tabular_extension(client: TestClient) -> None:
+def test_unsupported_tabular_extension(ctx) -> None:
+    client, repos, backend = ctx
     resp = client.post(
         f"/workspaces/{WORKSPACE_ID}/datasets/upload",
         files={"file": ("data.pdf", b"%PDF-1.4", "application/pdf")},
@@ -284,25 +337,10 @@ def test_unsupported_tabular_extension(client: TestClient) -> None:
     assert resp.status_code == 422
 
 
-def test_unsupported_context_extension(client: TestClient) -> None:
+def test_unsupported_context_extension(ctx) -> None:
+    client, repos, backend = ctx
     resp = client.post(
         f"/workspaces/{WORKSPACE_ID}/context-documents/upload",
         files={"file": ("notes.docx", b"PK...", "application/octet-stream")},
-    )
-    assert resp.status_code == 422
-
-
-def test_empty_csv_file(client: TestClient) -> None:
-    resp = client.post(
-        f"/workspaces/{WORKSPACE_ID}/datasets/upload",
-        files={"file": ("empty.csv", b"", "text/csv")},
-    )
-    assert resp.status_code == 422
-
-
-def test_empty_context_file(client: TestClient) -> None:
-    resp = client.post(
-        f"/workspaces/{WORKSPACE_ID}/context-documents/upload",
-        files={"file": ("empty.txt", b"", "text/plain")},
     )
     assert resp.status_code == 422

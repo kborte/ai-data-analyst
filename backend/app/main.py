@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.api.routes.cleaning import router as cleaning_router
 from app.api.routes.features import router as features_router
 from app.api.routes.health import router as health_router
+from app.api.routes.jobs import router as jobs_router
 from app.api.routes.profiles import router as profiles_router
 from app.api.routes.uploads import router as uploads_router
 from app.api.routes.visualization import router as visualization_router
@@ -19,3 +20,4 @@ app.include_router(profiles_router)
 app.include_router(cleaning_router)
 app.include_router(features_router)
 app.include_router(visualization_router)
+app.include_router(jobs_router)

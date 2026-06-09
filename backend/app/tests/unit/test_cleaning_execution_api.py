@@ -167,19 +167,20 @@ def test_validate_can_execute_false_missing_approval(ctx):
 
 
 # ---------------------------------------------------------------------------
-# 3. execute route creates cleaning result
+# 3. execute route creates a queued job (no longer runs synchronously)
 # ---------------------------------------------------------------------------
 
 
-def test_execute_creates_cleaning_result(ctx):
+def test_execute_creates_queued_job(ctx):
     client, repos, tmp_path = ctx
     step = _make_step()
     version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
+    workspace_id = uuid.uuid4()
 
     resp = client.post(
         f"/cleaning-plans/{plan_id}/execute",
         json={
-            "workspace_id": str(uuid.uuid4()),
+            "workspace_id": str(workspace_id),
             "dataset_id": str(_DATASET_ID),
             "input_dataset_version_id": str(version_id),
             "executed_by_user_id": str(_USER_ID),
@@ -189,24 +190,26 @@ def test_execute_creates_cleaning_result(ctx):
 
     assert resp.status_code == 201
     body = resp.json()
-    assert "cleaning_result_id" in body
-    assert body["status"] == "completed"
+    assert "job_id" in body
+    assert body["status"] == "queued"
+    assert body["job_type"] == "execute_cleaning"
 
 
 # ---------------------------------------------------------------------------
-# 4. execute route returns output dataset version id
+# 4. execute route stores payload with decisions and ids
 # ---------------------------------------------------------------------------
 
 
-def test_execute_returns_output_version_id(ctx):
+def test_execute_job_payload_contains_decisions(ctx):
     client, repos, tmp_path = ctx
     step = _make_step()
     version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
+    workspace_id = uuid.uuid4()
 
     resp = client.post(
         f"/cleaning-plans/{plan_id}/execute",
         json={
-            "workspace_id": str(uuid.uuid4()),
+            "workspace_id": str(workspace_id),
             "dataset_id": str(_DATASET_ID),
             "input_dataset_version_id": str(version_id),
             "executed_by_user_id": str(_USER_ID),
@@ -215,33 +218,109 @@ def test_execute_returns_output_version_id(ctx):
     )
 
     body = resp.json()
-    assert body["output_dataset_version_id"] is not None
-    out_id = uuid.UUID(body["output_dataset_version_id"])
-    assert repos.dataset_version.get(out_id) is not None
+    payload = body["payload_json"]
+    assert payload["cleaning_plan_id"] == str(plan_id)
+    assert len(payload["decisions"]) == 1
+    assert payload["decisions"][0]["decision"] == "approve"
 
 
 # ---------------------------------------------------------------------------
-# 5. execute route does not mutate original version
+# 5. worker handler executes cleaning and marks job completed
 # ---------------------------------------------------------------------------
 
 
-def test_execute_does_not_mutate_original(ctx):
+def test_worker_runs_cleaning_job_end_to_end(ctx):
+    from app.worker.runner import run_one
+
     client, repos, tmp_path = ctx
     step = _make_step()
     version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
-    csv_path = tmp_path / "orders.csv"
-    original_content = csv_path.read_bytes()
+    workspace_id = uuid.uuid4()
 
-    client.post(
+    resp = client.post(
         f"/cleaning-plans/{plan_id}/execute",
         json={
-            "workspace_id": str(uuid.uuid4()),
+            "workspace_id": str(workspace_id),
             "dataset_id": str(_DATASET_ID),
             "input_dataset_version_id": str(version_id),
             "executed_by_user_id": str(_USER_ID),
             "decisions": [{"step_id": str(step.step_id), "decision": "approve"}],
         },
     )
+    job_id = uuid.UUID(resp.json()["job_id"])
+
+    processed = run_one(repos.job, repos, storage=None, llm=None)
+
+    assert processed is True
+    saved_job = repos.job.get(job_id)
+    assert saved_job.status == "completed"
+    assert saved_job.result_type == "cleaning_result"
+    assert saved_job.result_id is not None
+    assert saved_job.output_dataset_version_id is not None
+
+
+# ---------------------------------------------------------------------------
+# 6. worker creates CleaningResult and cleaned DatasetVersion
+# ---------------------------------------------------------------------------
+
+
+def test_worker_creates_cleaning_result_and_version(ctx):
+    from app.worker.runner import run_one
+
+    client, repos, tmp_path = ctx
+    step = _make_step()
+    version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
+    workspace_id = uuid.uuid4()
+
+    resp = client.post(
+        f"/cleaning-plans/{plan_id}/execute",
+        json={
+            "workspace_id": str(workspace_id),
+            "dataset_id": str(_DATASET_ID),
+            "input_dataset_version_id": str(version_id),
+            "executed_by_user_id": str(_USER_ID),
+            "decisions": [{"step_id": str(step.step_id), "decision": "approve"}],
+        },
+    )
+    job_id = uuid.UUID(resp.json()["job_id"])
+    run_one(repos.job, repos, storage=None, llm=None)
+
+    job = repos.job.get(job_id)
+    result = repos.cleaning_result.get(job.result_id)
+    assert result is not None
+    assert result.status == "completed"
+    out_version = repos.dataset_version.get(job.output_dataset_version_id)
+    assert out_version is not None
+    assert out_version.dataset_id == _DATASET_ID
+    assert out_version.parent_version_id == version_id
+
+
+# ---------------------------------------------------------------------------
+# 7. original version not mutated after worker runs
+# ---------------------------------------------------------------------------
+
+
+def test_worker_does_not_mutate_original_version(ctx):
+    from app.worker.runner import run_one
+
+    client, repos, tmp_path = ctx
+    step = _make_step()
+    version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
+    csv_path = tmp_path / "orders.csv"
+    original_content = csv_path.read_bytes()
+    workspace_id = uuid.uuid4()
+
+    resp = client.post(
+        f"/cleaning-plans/{plan_id}/execute",
+        json={
+            "workspace_id": str(workspace_id),
+            "dataset_id": str(_DATASET_ID),
+            "input_dataset_version_id": str(version_id),
+            "executed_by_user_id": str(_USER_ID),
+            "decisions": [{"step_id": str(step.step_id), "decision": "approve"}],
+        },
+    )
+    run_one(repos.job, repos, storage=None, llm=None)
 
     assert csv_path.read_bytes() == original_content
     assert repos.dataset_version.get(version_id) is not None
@@ -261,7 +340,7 @@ def test_validate_missing_plan_returns_404(ctx):
     assert resp.status_code == 404
 
 
-def test_execute_missing_plan_returns_422(ctx):
+def test_execute_missing_plan_returns_404(ctx):
     client, repos, _ = ctx
     version_id = uuid.uuid4()
     repos.dataset_version.save(DatasetVersion(
@@ -282,4 +361,4 @@ def test_execute_missing_plan_returns_422(ctx):
             "decisions": [],
         },
     )
-    assert resp.status_code == 422
+    assert resp.status_code == 404

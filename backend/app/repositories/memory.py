@@ -6,6 +6,7 @@ Temporary — replace with database-backed implementations in a later milestone.
 from uuid import UUID
 
 from app.schemas.cleaning import CleaningPlan, CleaningResult
+from app.schemas.job import Job
 from app.schemas.context_document import ContextDocument
 from app.schemas.dataset import Dataset, DatasetSource, DatasetTable, DatasetVersion
 from app.schemas.features import FeaturePlan, FeatureResult
@@ -222,3 +223,46 @@ class VisualizationResultRepository:
 
     def list_by_plan(self, visualization_plan_id: UUID) -> list[VisualizationResult]:
         return [v for v in self._store.values() if v.visualization_plan_id == visualization_plan_id]
+
+
+class JobRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, Job] = {}
+
+    def save(self, obj: Job) -> Job:
+        self._store[obj.job_id] = obj
+        return obj
+
+    def get(self, job_id: UUID) -> Job | None:
+        return self._store.get(job_id)
+
+    def list_by_dataset(self, dataset_id: UUID) -> list[Job]:
+        return sorted(
+            [j for j in self._store.values() if j.dataset_id == dataset_id],
+            key=lambda j: j.created_at,
+            reverse=True,
+        )
+
+    def list_by_workspace(self, workspace_id: UUID) -> list[Job]:
+        return sorted(
+            [j for j in self._store.values() if j.workspace_id == workspace_id],
+            key=lambda j: j.created_at,
+            reverse=True,
+        )
+
+    def claim_next_queued(self) -> Job | None:
+        """Return and mark running the oldest queued job (not concurrency-safe)."""
+        from datetime import datetime, timezone  # noqa: PLC0415
+        candidates = sorted(
+            [j for j in self._store.values() if j.status == "queued"],
+            key=lambda j: j.created_at,
+        )
+        if not candidates:
+            return None
+        job = candidates[0]
+        claimed = job.model_copy(update={
+            "status": "running",
+            "started_at": datetime.now(tz=timezone.utc),
+        })
+        self._store[claimed.job_id] = claimed
+        return claimed

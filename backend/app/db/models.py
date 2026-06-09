@@ -222,3 +222,25 @@ class FeatureResultModel(Base):
     features_added: Mapped[list | None] = mapped_column(JSONB)
     execution_log_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class VisualizationPlanModel(Base):
+    __tablename__ = "visualization_plans"
+
+    visualization_plan_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dataset_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("dataset_versions.dataset_version_id"), nullable=False)
+    analysis_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    plan_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class VisualizationResultModel(Base):
+    __tablename__ = "visualization_results"
+
+    visualization_result_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    visualization_plan_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("visualization_plans.visualization_plan_id"), nullable=False)
+    dataset_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("dataset_versions.dataset_version_id"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    result_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)

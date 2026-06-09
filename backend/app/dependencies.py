@@ -1,6 +1,8 @@
 from collections.abc import Generator
 from dataclasses import dataclass, field
 
+from app.tools.llm.provider import FakeLLMProvider, LLMProvider, OpenAILLMProvider
+
 from app.repositories.memory import (
     CleaningPlanRepository,
     CleaningResultRepository,
@@ -37,14 +39,21 @@ class Repos:
     visualization_result: VisualizationResultRepository = field(default_factory=VisualizationResultRepository)
 
 
-_repos = Repos()
+_memory_repos = Repos()
 
 
-def get_repos() -> Repos:
-    return _repos
+def get_llm_provider() -> LLMProvider:
+    from app.core.config import settings  # noqa: PLC0415
+    if settings.OPENAI_API_KEY:
+        return OpenAILLMProvider(api_key=settings.OPENAI_API_KEY, model=settings.LLM_MODEL)
+    return FakeLLMProvider()
 
 
-def get_db_repos() -> Generator[Repos, None, None]:
+def get_memory_repos() -> Repos:
+    return _memory_repos
+
+
+def get_repos() -> Generator[Repos, None, None]:
     """FastAPI dependency that provides database-backed repositories via a SQLAlchemy session."""
     import app.repositories.database as db_repos  # noqa: PLC0415
     from app.db.base import get_db  # noqa: PLC0415
@@ -63,4 +72,6 @@ def get_db_repos() -> Generator[Repos, None, None]:
             cleaning_result=db_repos.CleaningResultRepository(session),  # type: ignore[arg-type]
             feature_plan=db_repos.FeaturePlanRepository(session),  # type: ignore[arg-type]
             feature_result=db_repos.FeatureResultRepository(session),  # type: ignore[arg-type]
+            visualization_plan=db_repos.VisualizationPlanRepository(session),  # type: ignore[arg-type]
+            visualization_result=db_repos.VisualizationResultRepository(session),  # type: ignore[arg-type]
         )

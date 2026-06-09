@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import pandas as pd
 
+from app.schemas.profile import DataProfile
 from app.repositories.memory import (
     DataProfileRepository,
     DatasetTableRepository,
@@ -31,6 +32,8 @@ from app.schemas.features import (
 from app.tools.data.feature_executor import execute_features
 from app.tools.data.feature_planner import generate_feature_suggestions
 from app.tools.files.storage import build_cleaned_table_path, save_cleaned_table
+from app.tools.llm.prompts import FEATURE_SUGGEST_SCHEMA, feature_suggest_prompt
+from app.tools.llm.provider import FakeLLMProvider, LLMProvider
 
 _EXCEL_EXTS = {".xlsx", ".xls"}
 
@@ -61,6 +64,45 @@ def _next_version_number(dataset_id: UUID, version_repo: DatasetVersionRepositor
     return max((v.version_number for v in existing), default=0) + 1
 
 
+def _llm_feature_suggestions(
+    profile: DataProfile,
+    existing: list,
+    llm: LLMProvider,
+) -> list:
+    """ONE LLM call: add domain-specific features the keyword matcher missed."""
+    from uuid import uuid5, NAMESPACE_DNS  # noqa: PLC0415
+    from app.schemas.features import FeatureDefinition  # noqa: PLC0415
+    from app.schemas.common import FeatureOperationType  # noqa: PLC0415
+
+    existing_names = [f.feature_name for f in existing]
+    prompt = feature_suggest_prompt(profile, existing_names)
+    result = llm.complete_structured(prompt, "suggest_features", FEATURE_SUGGEST_SCHEMA)
+
+    valid_col_names = {c.column_name for c in profile.column_profiles}
+    added: list[FeatureDefinition] = []
+    for item in result.get("features", []):
+        required = item.get("required_columns", [])
+        if not all(c in valid_col_names for c in required):
+            continue  # LLM hallucinated a column name — skip
+        try:
+            op = FeatureOperationType(item["operation_type"])
+        except (KeyError, ValueError):
+            op = FeatureOperationType.custom
+        added.append(FeatureDefinition(
+            feature_id=uuid5(NAMESPACE_DNS, f"{profile.table_name}.llm.{item['feature_name']}"),
+            feature_name=item["feature_name"],
+            display_name=item.get("display_name", item["feature_name"]),
+            operation_type=op,
+            formula_display=item.get("formula_display", ""),
+            input_table=profile.table_name,
+            output_column=item.get("output_column", item["feature_name"]),
+            required_columns=required,
+            parameters=item.get("parameters", {}),
+            requires_human_approval=True,
+        ))
+    return added
+
+
 class FeatureService:
     def __init__(
         self,
@@ -69,18 +111,24 @@ class FeatureService:
         table_repo: DatasetTableRepository,
         plan_repo: FeaturePlanRepository,
         result_repo: FeatureResultRepository,
+        llm: LLMProvider | None = None,
     ) -> None:
         self._profiles = profile_repo
         self._versions = version_repo
         self._tables = table_repo
         self._plans = plan_repo
         self._results = result_repo
+        self._llm = llm or FakeLLMProvider()
 
     def create_feature_plan(self, profile_id: UUID, dataset_version_id: UUID) -> FeaturePlan:
         profile = self._profiles.get(profile_id)
         if profile is None:
             raise ValueError(f"DataProfile {profile_id} not found")
         features = generate_feature_suggestions(profile)
+
+        if self._llm.is_available():
+            features = features + _llm_feature_suggestions(profile, features, self._llm)
+
         plan = FeaturePlan(
             feature_plan_id=uuid4(),
             dataset_version_id=dataset_version_id,

@@ -4,7 +4,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.dependencies import Repos, get_repos
+from app.dependencies import Repos, get_llm_provider, get_repos
+from app.tools.llm.provider import LLMProvider
 from app.schemas.features import (
     FeatureDecisionItem,
     FeatureDecisions,
@@ -41,13 +42,14 @@ class ExecuteFeaturePlanRequest(BaseModel):
     decisions: list[FeatureDecisionItem]
 
 
-def _service(repos: Repos) -> FeatureService:
+def _service(repos: Repos, llm: LLMProvider) -> FeatureService:
     return FeatureService(
         repos.profile,
         repos.dataset_version,
         repos.dataset_table,
         repos.feature_plan,
         repos.feature_result,
+        llm,
     )
 
 
@@ -61,9 +63,10 @@ def create_feature_plan(
     dataset_version_id: UUID,
     body: CreateFeaturePlanRequest,
     repos: Repos = Depends(get_repos),
+    llm: LLMProvider = Depends(get_llm_provider),
 ) -> FeaturePlan:
     try:
-        return _service(repos).create_feature_plan(body.profile_id, dataset_version_id)
+        return _service(repos, llm).create_feature_plan(body.profile_id, dataset_version_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -76,9 +79,10 @@ def validate_feature_decisions(
     feature_plan_id: UUID,
     body: ValidateFeatureDecisionsRequest,
     repos: Repos = Depends(get_repos),
+    llm: LLMProvider = Depends(get_llm_provider),
 ) -> ValidateFeatureDecisionsResponse:
     try:
-        v: DecisionValidation = _service(repos).validate_decisions(feature_plan_id, body.decisions)
+        v: DecisionValidation = _service(repos, llm).validate_decisions(feature_plan_id, body.decisions)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ValidateFeatureDecisionsResponse(
@@ -99,6 +103,7 @@ def execute_feature_plan(
     feature_plan_id: UUID,
     body: ExecuteFeaturePlanRequest,
     repos: Repos = Depends(get_repos),
+    llm: LLMProvider = Depends(get_llm_provider),
 ) -> FeatureResult:
     decisions = FeatureDecisions(
         feature_decisions_id=uuid4(),
@@ -108,7 +113,7 @@ def execute_feature_plan(
         created_at=datetime.now(tz=UTC),
     )
     try:
-        return _service(repos).execute_feature_plan(
+        return _service(repos, llm).execute_feature_plan(
             workspace_id=body.workspace_id,
             dataset_id=body.dataset_id,
             input_dataset_version_id=body.input_dataset_version_id,

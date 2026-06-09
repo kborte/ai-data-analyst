@@ -4,7 +4,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.dependencies import Repos, get_repos
+from app.dependencies import Repos, get_llm_provider, get_repos
+from app.tools.llm.provider import LLMProvider
 from app.schemas.visualization import (
     VisualizationDecisionItem,
     VisualizationDecisions,
@@ -38,12 +39,13 @@ class GenerateVisualizationRequest(BaseModel):
     decisions: list[VisualizationDecisionItem]
 
 
-def _service(repos: Repos) -> VisualizationService:
+def _service(repos: Repos, llm: LLMProvider) -> VisualizationService:
     return VisualizationService(
         repos.profile,
         repos.dataset_table,
         repos.visualization_plan,
         repos.visualization_result,
+        llm,
     )
 
 
@@ -57,9 +59,10 @@ def create_visualization_plan(
     dataset_version_id: UUID,
     body: CreateVisualizationPlanRequest,
     repos: Repos = Depends(get_repos),
+    llm: LLMProvider = Depends(get_llm_provider),
 ) -> VisualizationPlan:
     try:
-        return _service(repos).create_visualization_plan(body.profile_id, dataset_version_id)
+        return _service(repos, llm).create_visualization_plan(body.profile_id, dataset_version_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -72,9 +75,10 @@ def validate_visualization_decisions(
     visualization_plan_id: UUID,
     body: ValidateVisualizationDecisionsRequest,
     repos: Repos = Depends(get_repos),
+    llm: LLMProvider = Depends(get_llm_provider),
 ) -> ValidateVisualizationDecisionsResponse:
     try:
-        v: DecisionValidation = _service(repos).validate_decisions(
+        v: DecisionValidation = _service(repos, llm).validate_decisions(
             visualization_plan_id, body.decisions
         )
     except ValueError as exc:
@@ -97,6 +101,7 @@ def generate_visualization(
     visualization_plan_id: UUID,
     body: GenerateVisualizationRequest,
     repos: Repos = Depends(get_repos),
+    llm: LLMProvider = Depends(get_llm_provider),
 ) -> VisualizationResult:
     decisions = VisualizationDecisions(
         visualization_decisions_id=uuid4(),
@@ -106,6 +111,6 @@ def generate_visualization(
         created_at=datetime.now(tz=UTC),
     )
     try:
-        return _service(repos).generate(visualization_plan_id, decisions)
+        return _service(repos, llm).generate(visualization_plan_id, decisions)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

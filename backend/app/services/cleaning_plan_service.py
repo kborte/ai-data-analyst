@@ -1,9 +1,3 @@
-"""
-CleaningPlanService: builds and persists CleaningPlan objects.
-
-No LLM calls. No cleaning execution. No dataset mutation.
-"""
-
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -13,9 +7,12 @@ from app.schemas.cleaning import (
     CleaningPlan,
     CleaningPlanJson,
     CleaningPlanSummary,
+    CleaningStep,
 )
 from app.schemas.common import ArtifactStatus
 from app.tools.data.cleaning_rule_engine import generate_cleaning_steps
+from app.tools.llm.prompts import CLEANING_ENRICH_SCHEMA, cleaning_enrich_prompt
+from app.tools.llm.provider import FakeLLMProvider, LLMProvider
 
 _IGNORE_OPS = {CleaningOperationType.ignore_issue}
 _GLOBAL_ASSUMPTIONS = [
@@ -23,6 +20,8 @@ _GLOBAL_ASSUMPTIONS = [
     "Cleaning creates a new dataset version in a later milestone.",
     "Steps marked require_review must be approved before execution.",
 ]
+# LLM only called for steps above this affected-row threshold to limit tokens.
+_LLM_ENRICH_THRESHOLD_PCT = 5.0
 
 
 def _build_summary(steps: list) -> CleaningPlanSummary:
@@ -47,14 +46,58 @@ def _build_summary(steps: list) -> CleaningPlanSummary:
     )
 
 
+def _enrich_steps_with_llm(
+    steps: list[CleaningStep],
+    table_name: str,
+    llm: LLMProvider,
+) -> list[CleaningStep]:
+    """
+    ONE LLM call: sends only high-impact steps (requires_human_approval=True
+    and affected_rows_percent >= threshold) for rationale enrichment.
+    Falls back to original steps on any failure.
+    """
+    candidates = [
+        s for s in steps
+        if s.recommendation.requires_human_approval
+        and s.issue.affected_rows_percent >= _LLM_ENRICH_THRESHOLD_PCT
+    ]
+    if not candidates:
+        return steps
+
+    prompt = cleaning_enrich_prompt(candidates, table_name)
+    result = llm.complete_structured(prompt, "enrich_cleaning_steps", CLEANING_ENRICH_SCHEMA)
+    enriched_map: dict[str, dict] = {
+        e["step_id"]: e for e in result.get("enriched_steps", [])
+    }
+    if not enriched_map:
+        return steps
+
+    out: list[CleaningStep] = []
+    for step in steps:
+        enriched = enriched_map.get(str(step.step_id))
+        if enriched:
+            rec = step.recommendation.model_copy(update={
+                "rationale": enriched.get("rationale", step.recommendation.rationale),
+                "recommended_action": enriched.get(
+                    "recommended_action", step.recommendation.recommended_action
+                ),
+            })
+            out.append(step.model_copy(update={"recommendation": rec}))
+        else:
+            out.append(step)
+    return out
+
+
 class CleaningPlanService:
     def __init__(
         self,
         profile_repo: DataProfileRepository,
         cleaning_plan_repo: CleaningPlanRepository,
+        llm: LLMProvider | None = None,
     ) -> None:
         self._profiles = profile_repo
         self._plans = cleaning_plan_repo
+        self._llm = llm or FakeLLMProvider()
 
     def create_cleaning_plan(
         self,
@@ -66,6 +109,10 @@ class CleaningPlanService:
             raise ValueError(f"DataProfile {profile_id} not found")
 
         steps = generate_cleaning_steps(profile)
+
+        if self._llm.is_available():
+            steps = _enrich_steps_with_llm(steps, profile.table_name, self._llm)
+
         now = datetime.now(tz=UTC)
         plan_id = uuid4()
         summary = _build_summary(steps)

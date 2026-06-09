@@ -4,7 +4,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.dependencies import Repos, get_repos
+from app.dependencies import Repos, get_llm_provider, get_repos
+from app.tools.llm.provider import LLMProvider
 from app.schemas.cleaning import (
     CleaningDecisionItem,
     CleaningDecisions,
@@ -61,8 +62,9 @@ def create_cleaning_plan(
     dataset_version_id: UUID,
     body: CreateCleaningPlanRequest,
     repos: Repos = Depends(get_repos),
+    llm: LLMProvider = Depends(get_llm_provider),
 ) -> CleaningPlan:
-    service = CleaningPlanService(repos.profile, repos.cleaning_plan)
+    service = CleaningPlanService(repos.profile, repos.cleaning_plan, llm)
     try:
         return service.create_cleaning_plan(body.profile_id, dataset_version_id)
     except ValueError as exc:

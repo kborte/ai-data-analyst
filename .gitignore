@@ -13,9 +13,10 @@ node_modules/
 out/
 dist/
 
-# Environment
+# Environment — ignore real secrets, track the example template
 .env
 .env.*
+!.env.example
 
 # Local storage / uploads
 backend/storage/uploads/*

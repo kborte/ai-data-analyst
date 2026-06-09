@@ -18,6 +18,7 @@ from app.repositories.memory import (
     VisualizationResultRepository,
 )
 from app.schemas.common import ArtifactStatus, UserDecision
+from app.schemas.profile import DataProfile
 from app.schemas.visualization import (
     VisualizationDecisionItem,
     VisualizationDecisions,
@@ -27,8 +28,12 @@ from app.schemas.visualization import (
 )
 from app.tools.charts.chart_executor import ChartExecutor
 from app.tools.charts.chart_planner import ChartPlanner
+from app.tools.llm.prompts import CHART_SUGGEST_SCHEMA, chart_suggest_prompt
+from app.tools.llm.provider import FakeLLMProvider, LLMProvider
 
 _EXCEL_EXTS = {".xlsx", ".xls"}
+# LLM only called when deterministic planner produces fewer than this many suggestions.
+_LLM_CHART_THRESHOLD = 3
 
 
 @dataclass
@@ -52,6 +57,48 @@ def _load_df(storage_path: str) -> pd.DataFrame:
     raise ValueError(f"Unsupported file type: {ext!r}")
 
 
+def _llm_chart_suggestions(
+    profile: DataProfile,
+    existing: list,
+    llm: LLMProvider,
+) -> list:
+    """ONE LLM call: add charts for patterns the heuristic rules didn't cover."""
+    from uuid import uuid4  # noqa: PLC0415
+    from app.schemas.common import ChartType  # noqa: PLC0415
+
+    existing_titles = [s.title for s in existing]
+    prompt = chart_suggest_prompt(profile, existing_titles)
+    result = llm.complete_structured(prompt, "suggest_charts", CHART_SUGGEST_SCHEMA)
+
+    valid_cols = {c.column_name for c in profile.column_profiles}
+    from app.schemas.visualization import ChartSuggestion  # noqa: PLC0415
+    added = []
+    for item in result.get("charts", []):
+        x_col = item.get("x_column", "")
+        if x_col not in valid_cols:
+            continue  # hallucinated column — skip
+        y_col = item.get("y_column")
+        if y_col and y_col not in valid_cols:
+            y_col = None
+        try:
+            chart_type = ChartType(item["chart_type"])
+        except (KeyError, ValueError):
+            continue
+        added.append(ChartSuggestion(
+            visualization_id=uuid4(),
+            title=item.get("title", ""),
+            description=item.get("description", ""),
+            chart_type=chart_type,
+            input_table=profile.table_name,
+            x_column=x_col,
+            y_column=y_col,
+            aggregation=item.get("aggregation"),
+            user_facing_explanation=item.get("user_facing_explanation", ""),
+            requires_human_approval=True,
+        ))
+    return added
+
+
 class VisualizationService:
     def __init__(
         self,
@@ -59,11 +106,13 @@ class VisualizationService:
         table_repo: DatasetTableRepository,
         plan_repo: VisualizationPlanRepository,
         result_repo: VisualizationResultRepository,
+        llm: LLMProvider | None = None,
     ) -> None:
         self._profiles = profile_repo
         self._tables = table_repo
         self._plans = plan_repo
         self._results = result_repo
+        self._llm = llm or FakeLLMProvider()
 
     def create_visualization_plan(
         self, profile_id: UUID, dataset_version_id: UUID
@@ -72,6 +121,9 @@ class VisualizationService:
         if profile is None:
             raise ValueError(f"DataProfile {profile_id} not found")
         suggestions = ChartPlanner().suggest(profile)
+
+        if self._llm.is_available() and len(suggestions) < _LLM_CHART_THRESHOLD:
+            suggestions = suggestions + _llm_chart_suggestions(profile, suggestions, self._llm)
         plan = VisualizationPlan(
             visualization_plan_id=uuid4(),
             dataset_version_id=dataset_version_id,

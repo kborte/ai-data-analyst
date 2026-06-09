@@ -22,6 +22,8 @@ from app.db.models import (
     FeaturePlanModel,
     FeatureResultModel,
     UploadedFileModel,
+    VisualizationPlanModel,
+    VisualizationResultModel,
 )
 from app.schemas.cleaning import (
     CleaningDecisions,
@@ -44,6 +46,13 @@ from app.schemas.features import (
 )
 from app.schemas.profile import ColumnProfile, DataProfile, DataQualityIssue
 from app.schemas.source import DataSource, UploadedFile
+from app.schemas.visualization import (
+    ChartExecutionResult,
+    ChartSpec,
+    VisualizationPlan,
+    VisualizationPlanJson,
+    VisualizationResult,
+)
 
 # --- ORM → Pydantic converters ---
 
@@ -694,3 +703,90 @@ class FeatureDecisionsRepository:
             .all()
         )
         return [_feature_decisions_from_orm(r) for r in rows]
+
+
+def _visualization_plan_from_orm(row: VisualizationPlanModel) -> VisualizationPlan:
+    return VisualizationPlan(
+        visualization_plan_id=row.visualization_plan_id,
+        dataset_version_id=row.dataset_version_id,
+        analysis_run_id=row.analysis_run_id,
+        status=row.status,
+        plan_json=VisualizationPlanJson.model_validate(row.plan_json or {}),
+        created_at=row.created_at,
+    )
+
+
+def _visualization_result_from_orm(row: VisualizationResultModel) -> VisualizationResult:
+    rj = row.result_json or {}
+    return VisualizationResult(
+        visualization_result_id=row.visualization_result_id,
+        visualization_plan_id=row.visualization_plan_id,
+        dataset_version_id=row.dataset_version_id,
+        status=row.status,
+        chart_specs=[ChartSpec.model_validate(s) for s in rj.get("chart_specs", [])],
+        chart_results=[ChartExecutionResult.model_validate(r) for r in rj.get("chart_results", [])],
+        created_at=row.created_at,
+    )
+
+
+class VisualizationPlanRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, obj: VisualizationPlan) -> VisualizationPlan:
+        row = VisualizationPlanModel(
+            visualization_plan_id=obj.visualization_plan_id,
+            dataset_version_id=obj.dataset_version_id,
+            analysis_run_id=obj.analysis_run_id,
+            status=str(obj.status),
+            plan_json=obj.plan_json.model_dump(mode="json"),
+            created_at=obj.created_at,
+        )
+        merged = self._session.merge(row)
+        self._session.commit()
+        return _visualization_plan_from_orm(merged)
+
+    def get(self, visualization_plan_id: UUID) -> VisualizationPlan | None:
+        row = self._session.get(VisualizationPlanModel, visualization_plan_id)
+        return _visualization_plan_from_orm(row) if row else None
+
+    def list_by_version(self, dataset_version_id: UUID) -> list[VisualizationPlan]:
+        rows = (
+            self._session.query(VisualizationPlanModel)
+            .filter(VisualizationPlanModel.dataset_version_id == dataset_version_id)
+            .all()
+        )
+        return [_visualization_plan_from_orm(r) for r in rows]
+
+
+class VisualizationResultRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, obj: VisualizationResult) -> VisualizationResult:
+        row = VisualizationResultModel(
+            visualization_result_id=obj.visualization_result_id,
+            visualization_plan_id=obj.visualization_plan_id,
+            dataset_version_id=obj.dataset_version_id,
+            status=str(obj.status),
+            result_json={
+                "chart_specs": [s.model_dump(mode="json") for s in obj.chart_specs],
+                "chart_results": [r.model_dump(mode="json") for r in obj.chart_results],
+            },
+            created_at=obj.created_at,
+        )
+        merged = self._session.merge(row)
+        self._session.commit()
+        return _visualization_result_from_orm(merged)
+
+    def get(self, visualization_result_id: UUID) -> VisualizationResult | None:
+        row = self._session.get(VisualizationResultModel, visualization_result_id)
+        return _visualization_result_from_orm(row) if row else None
+
+    def list_by_plan(self, visualization_plan_id: UUID) -> list[VisualizationResult]:
+        rows = (
+            self._session.query(VisualizationResultModel)
+            .filter(VisualizationResultModel.visualization_plan_id == visualization_plan_id)
+            .all()
+        )
+        return [_visualization_result_from_orm(r) for r in rows]

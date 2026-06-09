@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     STORAGE_BACKEND: str = "local"
     LOCAL_STORAGE_DIR: str = "storage/uploads"
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/ai_data_analyst"
+    OPENAI_API_KEY: str = ""
+    LLM_MODEL: str = "gpt-4o-mini"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

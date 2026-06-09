@@ -22,6 +22,8 @@ from app.db.models import (
     FeaturePlanModel,
     FeatureResultModel,
     JobModel,
+    SavedViewModel,
+    SavedVisualModel,
     UploadedFileModel,
     VisualizationPlanModel,
     VisualizationResultModel,
@@ -48,6 +50,8 @@ from app.schemas.features import (
 )
 from app.schemas.profile import ColumnProfile, DataProfile, DataQualityIssue
 from app.schemas.source import DataSource, UploadedFile
+from app.schemas.saved_view import SavedView, SavedViewSourceType
+from app.schemas.saved_visual import SavedVisual, SavedVisualSourceType
 from app.schemas.visualization import (
     ChartExecutionResult,
     ChartSpec,
@@ -879,3 +883,167 @@ class JobRepository:
         row.started_at = datetime.now(tz=timezone.utc)
         self._session.commit()
         return _job_from_orm(row)
+
+
+def _saved_view_from_orm(row: SavedViewModel) -> SavedView:
+    return SavedView(
+        saved_view_id=row.saved_view_id,
+        workspace_id=row.workspace_id,
+        dataset_id=row.dataset_id,
+        dataset_version_id=row.dataset_version_id,
+        name=row.name,
+        description=row.description,
+        source_type=SavedViewSourceType(row.source_type),
+        source_spec_json=row.source_spec_json or {},
+        storage_backend=row.storage_backend,
+        storage_bucket=row.storage_bucket,
+        storage_path=row.storage_path,
+        storage_format=row.storage_format,
+        row_count=row.row_count,
+        column_count=row.column_count,
+        created_at=row.created_at,
+        created_by_user_id=row.created_by_user_id,
+        metadata_json=row.metadata_json or {},
+    )
+
+
+class SavedViewRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, obj: SavedView) -> SavedView:
+        row = SavedViewModel(
+            saved_view_id=obj.saved_view_id,
+            workspace_id=obj.workspace_id,
+            dataset_id=obj.dataset_id,
+            dataset_version_id=obj.dataset_version_id,
+            name=obj.name,
+            description=obj.description,
+            source_type=str(obj.source_type),
+            source_spec_json=obj.source_spec_json,
+            storage_backend=obj.storage_backend,
+            storage_bucket=obj.storage_bucket,
+            storage_path=obj.storage_path,
+            storage_format=obj.storage_format,
+            row_count=obj.row_count,
+            column_count=obj.column_count,
+            created_at=obj.created_at,
+            created_by_user_id=obj.created_by_user_id,
+            metadata_json=obj.metadata_json,
+        )
+        merged = self._session.merge(row)
+        self._session.commit()
+        return _saved_view_from_orm(merged)
+
+    def get(self, saved_view_id: UUID) -> SavedView | None:
+        row = self._session.get(SavedViewModel, saved_view_id)
+        return _saved_view_from_orm(row) if row else None
+
+    def list_by_version(self, dataset_version_id: UUID) -> list[SavedView]:
+        rows = (
+            self._session.query(SavedViewModel)
+            .filter(SavedViewModel.dataset_version_id == dataset_version_id)
+            .order_by(SavedViewModel.created_at.desc())
+            .all()
+        )
+        return [_saved_view_from_orm(r) for r in rows]
+
+    def list_by_dataset(self, dataset_id: UUID) -> list[SavedView]:
+        rows = (
+            self._session.query(SavedViewModel)
+            .filter(SavedViewModel.dataset_id == dataset_id)
+            .order_by(SavedViewModel.created_at.desc())
+            .all()
+        )
+        return [_saved_view_from_orm(r) for r in rows]
+
+    def delete(self, saved_view_id: UUID) -> bool:
+        row = self._session.get(SavedViewModel, saved_view_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._session.commit()
+        return True
+
+
+def _saved_visual_from_orm(row: SavedVisualModel) -> SavedVisual:
+    return SavedVisual(
+        visual_id=row.visual_id,
+        workspace_id=row.workspace_id,
+        dataset_id=row.dataset_id,
+        dataset_version_id=row.dataset_version_id,
+        title=row.title,
+        description=row.description,
+        chart_type=row.chart_type,
+        chart_spec_json=row.chart_spec_json or {},
+        source_type=SavedVisualSourceType(row.source_type),
+        source_visualization_result_id=row.source_visualization_result_id,
+        source_view_id=row.source_view_id,
+        source_spec_json=row.source_spec_json or {},
+        data_storage_backend=row.data_storage_backend,
+        data_storage_bucket=row.data_storage_bucket,
+        data_storage_path=row.data_storage_path,
+        created_at=row.created_at,
+        created_by_user_id=row.created_by_user_id,
+        metadata_json=row.metadata_json or {},
+    )
+
+
+class SavedVisualRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, obj: SavedVisual) -> SavedVisual:
+        row = SavedVisualModel(
+            visual_id=obj.visual_id,
+            workspace_id=obj.workspace_id,
+            dataset_id=obj.dataset_id,
+            dataset_version_id=obj.dataset_version_id,
+            title=obj.title,
+            description=obj.description,
+            chart_type=obj.chart_type,
+            chart_spec_json=obj.chart_spec_json,
+            source_type=str(obj.source_type),
+            source_visualization_result_id=obj.source_visualization_result_id,
+            source_view_id=obj.source_view_id,
+            source_spec_json=obj.source_spec_json,
+            data_storage_backend=obj.data_storage_backend,
+            data_storage_bucket=obj.data_storage_bucket,
+            data_storage_path=obj.data_storage_path,
+            created_at=obj.created_at,
+            created_by_user_id=obj.created_by_user_id,
+            metadata_json=obj.metadata_json,
+        )
+        merged = self._session.merge(row)
+        self._session.commit()
+        return _saved_visual_from_orm(merged)
+
+    def get(self, visual_id: UUID) -> SavedVisual | None:
+        row = self._session.get(SavedVisualModel, visual_id)
+        return _saved_visual_from_orm(row) if row else None
+
+    def list_by_version(self, dataset_version_id: UUID) -> list[SavedVisual]:
+        rows = (
+            self._session.query(SavedVisualModel)
+            .filter(SavedVisualModel.dataset_version_id == dataset_version_id)
+            .order_by(SavedVisualModel.created_at.desc())
+            .all()
+        )
+        return [_saved_visual_from_orm(r) for r in rows]
+
+    def list_by_dataset(self, dataset_id: UUID) -> list[SavedVisual]:
+        rows = (
+            self._session.query(SavedVisualModel)
+            .filter(SavedVisualModel.dataset_id == dataset_id)
+            .order_by(SavedVisualModel.created_at.desc())
+            .all()
+        )
+        return [_saved_visual_from_orm(r) for r in rows]
+
+    def delete(self, visual_id: UUID) -> bool:
+        row = self._session.get(SavedVisualModel, visual_id)
+        if row is None:
+            return False
+        self._session.delete(row)
+        self._session.commit()
+        return True

@@ -137,3 +137,12 @@ def version_path(
 
 def result_path(workspace_id: UUID, dataset_id: UUID, artifact_id: UUID, ext: str) -> str:
     return f"workspaces/{workspace_id}/datasets/{dataset_id}/results/{artifact_id}.{ext}"
+
+
+def saved_view_path(workspace_id: UUID, dataset_id: UUID, view_id: UUID, fmt: str) -> str:
+    """Storage path for a saved view artifact.
+
+    Format: workspaces/{wid}/datasets/{did}/views/{view_id}.{fmt}
+    Supported fmt values: csv, parquet, json
+    """
+    return f"workspaces/{workspace_id}/datasets/{dataset_id}/views/{view_id}.{fmt}"

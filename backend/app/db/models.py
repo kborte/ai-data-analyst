@@ -264,3 +264,48 @@ class JobModel(Base):
     created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[object | None] = mapped_column(DateTime(timezone=True))
+
+
+class SavedViewModel(Base):
+    __tablename__ = "saved_views"
+
+    saved_view_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("workspaces.workspace_id"), nullable=False)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("datasets.dataset_id"), nullable=False)
+    dataset_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("dataset_versions.dataset_version_id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_spec_json: Mapped[dict | None] = mapped_column(JSONB)
+    storage_backend: Mapped[str | None] = mapped_column(Text)
+    storage_bucket: Mapped[str | None] = mapped_column(Text)
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    storage_format: Mapped[str | None] = mapped_column(Text)
+    row_count: Mapped[int | None] = mapped_column(Integer)
+    column_count: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    metadata_json: Mapped[dict | None] = mapped_column(JSONB)
+
+
+class SavedVisualModel(Base):
+    __tablename__ = "saved_visuals"
+
+    visual_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("workspaces.workspace_id"), nullable=False)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("datasets.dataset_id"), nullable=False)
+    dataset_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("dataset_versions.dataset_version_id"), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    chart_type: Mapped[str] = mapped_column(Text, nullable=False)
+    chart_spec_json: Mapped[dict | None] = mapped_column(JSONB)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_visualization_result_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    source_view_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    source_spec_json: Mapped[dict | None] = mapped_column(JSONB)
+    data_storage_backend: Mapped[str | None] = mapped_column(Text)
+    data_storage_bucket: Mapped[str | None] = mapped_column(Text)
+    data_storage_path: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    metadata_json: Mapped[dict | None] = mapped_column(JSONB)

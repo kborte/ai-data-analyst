@@ -8,6 +8,8 @@ from uuid import UUID
 from app.schemas.cleaning import CleaningPlan, CleaningResult
 from app.schemas.job import Job
 from app.schemas.context_document import ContextDocument
+from app.schemas.saved_view import SavedView
+from app.schemas.saved_visual import SavedVisual
 from app.schemas.dataset import Dataset, DatasetSource, DatasetTable, DatasetVersion
 from app.schemas.features import FeaturePlan, FeatureResult
 from app.schemas.profile import DataProfile
@@ -266,3 +268,62 @@ class JobRepository:
         })
         self._store[claimed.job_id] = claimed
         return claimed
+
+
+class SavedViewRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, SavedView] = {}
+
+    def save(self, obj: SavedView) -> SavedView:
+        self._store[obj.saved_view_id] = obj
+        return obj
+
+    def get(self, saved_view_id: UUID) -> SavedView | None:
+        return self._store.get(saved_view_id)
+
+    def list_by_version(self, dataset_version_id: UUID) -> list[SavedView]:
+        return sorted(
+            [v for v in self._store.values() if v.dataset_version_id == dataset_version_id],
+            key=lambda v: v.created_at,
+            reverse=True,
+        )
+
+    def list_by_dataset(self, dataset_id: UUID) -> list[SavedView]:
+        return sorted(
+            [v for v in self._store.values() if v.dataset_id == dataset_id],
+            key=lambda v: v.created_at,
+            reverse=True,
+        )
+
+    def delete(self, saved_view_id: UUID) -> bool:
+        """Returns True if the view existed and was removed."""
+        return self._store.pop(saved_view_id, None) is not None
+
+
+class SavedVisualRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, SavedVisual] = {}
+
+    def save(self, obj: SavedVisual) -> SavedVisual:
+        self._store[obj.visual_id] = obj
+        return obj
+
+    def get(self, visual_id: UUID) -> SavedVisual | None:
+        return self._store.get(visual_id)
+
+    def list_by_version(self, dataset_version_id: UUID) -> list[SavedVisual]:
+        return sorted(
+            [v for v in self._store.values() if v.dataset_version_id == dataset_version_id],
+            key=lambda v: v.created_at,
+            reverse=True,
+        )
+
+    def list_by_dataset(self, dataset_id: UUID) -> list[SavedVisual]:
+        return sorted(
+            [v for v in self._store.values() if v.dataset_id == dataset_id],
+            key=lambda v: v.created_at,
+            reverse=True,
+        )
+
+    def delete(self, visual_id: UUID) -> bool:
+        return self._store.pop(visual_id, None) is not None

@@ -17,6 +17,8 @@ from app.repositories.memory import (
     FeaturePlanRepository,
     FeatureResultRepository,
     JobRepository,
+    SavedViewRepository,
+    SavedVisualRepository,
     UploadedFileRepository,
     VisualizationPlanRepository,
     VisualizationResultRepository,
@@ -40,6 +42,8 @@ class Repos:
     visualization_plan: VisualizationPlanRepository = field(default_factory=VisualizationPlanRepository)
     visualization_result: VisualizationResultRepository = field(default_factory=VisualizationResultRepository)
     job: JobRepository = field(default_factory=JobRepository)
+    saved_view: SavedViewRepository = field(default_factory=SavedViewRepository)
+    saved_visual: SavedVisualRepository = field(default_factory=SavedVisualRepository)
 
 
 _memory_repos = Repos()
@@ -89,4 +93,6 @@ def get_repos() -> Generator[Repos, None, None]:
             visualization_plan=db_repos.VisualizationPlanRepository(session),  # type: ignore[arg-type]
             visualization_result=db_repos.VisualizationResultRepository(session),  # type: ignore[arg-type]
             job=db_repos.JobRepository(session),  # type: ignore[arg-type]
+            saved_view=db_repos.SavedViewRepository(session),  # type: ignore[arg-type]
+            saved_visual=db_repos.SavedVisualRepository(session),  # type: ignore[arg-type]
         )

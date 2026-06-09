@@ -5,6 +5,7 @@ from app.tools.llm.provider import FakeLLMProvider, LLMProvider, OpenAILLMProvid
 from app.tools.files.storage_service import LocalStorageBackend, StorageBackend, SupabaseStorageBackend
 
 from app.repositories.memory import (
+    CleaningDecisionsRepository,
     CleaningPlanRepository,
     CleaningResultRepository,
     ContextDocumentRepository,
@@ -14,6 +15,7 @@ from app.repositories.memory import (
     DatasetTableRepository,
     DatasetVersionRepository,
     DataSourceRepository,
+    FeatureDecisionsRepository,
     FeaturePlanRepository,
     FeatureResultRepository,
     JobRepository,
@@ -38,8 +40,10 @@ class Repos:
     context_document: ContextDocumentRepository = field(default_factory=ContextDocumentRepository)
     profile: DataProfileRepository = field(default_factory=DataProfileRepository)
     cleaning_plan: CleaningPlanRepository = field(default_factory=CleaningPlanRepository)
+    cleaning_decisions: CleaningDecisionsRepository = field(default_factory=CleaningDecisionsRepository)
     cleaning_result: CleaningResultRepository = field(default_factory=CleaningResultRepository)
     feature_plan: FeaturePlanRepository = field(default_factory=FeaturePlanRepository)
+    feature_decisions: FeatureDecisionsRepository = field(default_factory=FeatureDecisionsRepository)
     feature_result: FeatureResultRepository = field(default_factory=FeatureResultRepository)
     visualization_plan: VisualizationPlanRepository = field(default_factory=VisualizationPlanRepository)
     visualization_result: VisualizationResultRepository = field(default_factory=VisualizationResultRepository)
@@ -91,8 +95,10 @@ def get_repos() -> Generator[Repos, None, None]:
             context_document=db_repos.ContextDocumentRepository(session),  # type: ignore[arg-type]
             profile=db_repos.DataProfileRepository(session),  # type: ignore[arg-type]
             cleaning_plan=db_repos.CleaningPlanRepository(session),  # type: ignore[arg-type]
+            cleaning_decisions=db_repos.CleaningDecisionsRepository(session),  # type: ignore[arg-type]
             cleaning_result=db_repos.CleaningResultRepository(session),  # type: ignore[arg-type]
             feature_plan=db_repos.FeaturePlanRepository(session),  # type: ignore[arg-type]
+            feature_decisions=db_repos.FeatureDecisionsRepository(session),  # type: ignore[arg-type]
             feature_result=db_repos.FeatureResultRepository(session),  # type: ignore[arg-type]
             visualization_plan=db_repos.VisualizationPlanRepository(session),  # type: ignore[arg-type]
             visualization_result=db_repos.VisualizationResultRepository(session),  # type: ignore[arg-type]

@@ -5,13 +5,13 @@ Temporary — replace with database-backed implementations in a later milestone.
 
 from uuid import UUID
 
-from app.schemas.cleaning import CleaningPlan, CleaningResult
+from app.schemas.cleaning import CleaningDecisions, CleaningPlan, CleaningResult
 from app.schemas.job import Job
 from app.schemas.context_document import ContextDocument
 from app.schemas.saved_view import SavedView
 from app.schemas.saved_visual import SavedVisual
 from app.schemas.dataset import Dataset, DatasetSource, DatasetTable, DatasetVersion
-from app.schemas.features import FeaturePlan, FeatureResult
+from app.schemas.features import FeatureDecisions, FeaturePlan, FeatureResult
 from app.schemas.profile import DataProfile
 from app.schemas.source import DataSource, UploadedFile
 from app.schemas.user import User
@@ -161,6 +161,18 @@ class CleaningPlanRepository:
         return [v for v in self._store.values() if v.dataset_version_id == dataset_version_id]
 
 
+class CleaningDecisionsRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, CleaningDecisions] = {}
+
+    def save(self, obj: CleaningDecisions) -> CleaningDecisions:
+        self._store[obj.cleaning_decisions_id] = obj
+        return obj
+
+    def get(self, cleaning_decisions_id: UUID) -> CleaningDecisions | None:
+        return self._store.get(cleaning_decisions_id)
+
+
 class CleaningResultRepository:
     def __init__(self) -> None:
         self._store: dict[UUID, CleaningResult] = {}
@@ -189,6 +201,18 @@ class FeaturePlanRepository:
 
     def list_by_version(self, dataset_version_id: UUID) -> list[FeaturePlan]:
         return [v for v in self._store.values() if v.dataset_version_id == dataset_version_id]
+
+
+class FeatureDecisionsRepository:
+    def __init__(self) -> None:
+        self._store: dict[UUID, FeatureDecisions] = {}
+
+    def save(self, obj: FeatureDecisions) -> FeatureDecisions:
+        self._store[obj.feature_decisions_id] = obj
+        return obj
+
+    def get(self, feature_decisions_id: UUID) -> FeatureDecisions | None:
+        return self._store.get(feature_decisions_id)
 
 
 class FeatureResultRepository:

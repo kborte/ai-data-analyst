@@ -30,13 +30,13 @@ def handle_execute_cleaning(job: Job, repos: Any, storage: Any, llm: Any) -> dic
     executed_by_user_id = UUID(p["executed_by_user_id"])
     decision_items = [CleaningDecisionItem(**d) for d in p["decisions"]]
 
-    decisions = CleaningDecisions(
+    decisions = repos.cleaning_decisions.save(CleaningDecisions(
         cleaning_decisions_id=decisions_id,
         cleaning_plan_id=cleaning_plan_id,
         decided_by_user_id=executed_by_user_id,
         decisions_json=CleaningDecisionsJson(decisions=decision_items),
         created_at=datetime.now(tz=UTC),
-    )
+    ))
     service = CleaningExecutionService(
         repos.dataset_version,
         repos.dataset_table,
@@ -116,13 +116,13 @@ def handle_execute_features(job: Job, repos: Any, storage: Any, llm: Any) -> dic
     executed_by_user_id = UUID(p["executed_by_user_id"])
     decision_items = [FeatureDecisionItem(**d) for d in p["decisions"]]
 
-    decisions = FeatureDecisions(
+    decisions = repos.feature_decisions.save(FeatureDecisions(
         feature_decisions_id=decisions_id,
         feature_plan_id=feature_plan_id,
         decided_by_user_id=executed_by_user_id,
         decisions_json=FeatureDecisionsJson(decisions=decision_items),
         created_at=datetime.now(tz=UTC),
-    )
+    ))
     service = FeatureService(
         repos.profile,
         repos.dataset_version,

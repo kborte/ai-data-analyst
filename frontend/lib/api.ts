@@ -230,9 +230,16 @@ export async function saveVisualToVisuals(payload: {
 export async function pollJob(
   jobId: string,
   onDone: () => void,
-  onError: (msg: string) => void
+  onError: (msg: string) => void,
+  timeoutMs = 120_000
 ): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   const interval = setInterval(async () => {
+    if (Date.now() > deadline) {
+      clearInterval(interval);
+      onError("Timed out waiting for job to complete. Is the worker running?");
+      return;
+    }
     try {
       const job = await getJob(jobId);
       if (job.status === "completed") {

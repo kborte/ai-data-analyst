@@ -92,6 +92,15 @@ def run_preview_table(
     )
 
 
+_PERIOD_FREQ: dict[str, str] = {
+    "day":     "D",
+    "week":    "W",
+    "month":   "M",
+    "quarter": "Q",
+    "year":    "Y",
+}
+
+
 def run_aggregate_table(
     *,
     db_path: Path,
@@ -106,7 +115,20 @@ def run_aggregate_table(
     _check_columns(df, spec.group_by, spec.table_name)
     _check_columns(df, [m.column for m in spec.metrics], spec.table_name)
 
-    if spec.group_by:
+    # Truncate date columns in group_by to the requested period before aggregating.
+    group_by_cols = list(spec.group_by)
+    if spec.date_trunc_period and spec.date_trunc_period in _PERIOD_FREQ:
+        freq = _PERIOD_FREQ[spec.date_trunc_period]
+        for col in group_by_cols:
+            try:
+                parsed = pd.to_datetime(df[col], errors="coerce")
+                if parsed.notna().sum() > 0:
+                    df = df.copy()
+                    df[col] = parsed.dt.to_period(freq).dt.to_timestamp()
+            except Exception:  # noqa: BLE001
+                pass  # leave column as-is if conversion fails
+
+    if group_by_cols:
         named_aggs = {
             (m.alias or f"{m.aggregation}_{m.column}"): pd.NamedAgg(
                 column=m.column,
@@ -114,7 +136,7 @@ def run_aggregate_table(
             )
             for m in spec.metrics
         }
-        result = df.groupby(spec.group_by).agg(**named_aggs).reset_index()
+        result = df.groupby(group_by_cols).agg(**named_aggs).reset_index()
     else:
         result = pd.DataFrame(
             {

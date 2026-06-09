@@ -4,9 +4,10 @@ from typing import Any, Protocol, runtime_checkable
 @runtime_checkable
 class LLMProvider(Protocol):
     """
-    Sync LLM interface. All implementations must use OpenAI function-calling
-    so callers always get validated JSON back — never free text to parse.
-    Returns {} on any error so callers fall back to deterministic results.
+    Sync LLM interface.
+    complete_structured uses function-calling for guaranteed JSON output.
+    complete_text returns a free-text string for conversational answers.
+    Both return safe fallbacks on error so callers always get something.
     """
 
     def complete_structured(
@@ -15,6 +16,8 @@ class LLMProvider(Protocol):
         tool_name: str,
         tool_schema: dict[str, Any],
     ) -> dict[str, Any]: ...
+
+    def complete_text(self, prompt: str, max_tokens: int = 600) -> str: ...
 
     def is_available(self) -> bool: ...
 
@@ -29,6 +32,9 @@ class FakeLLMProvider:
         tool_schema: dict[str, Any],
     ) -> dict[str, Any]:
         return {}
+
+    def complete_text(self, prompt: str, max_tokens: int = 600) -> str:
+        return ""
 
     def is_available(self) -> bool:
         return False
@@ -77,3 +83,15 @@ class OpenAILLMProvider:
             return json.loads(args)
         except Exception:  # noqa: BLE001
             return {}
+
+    def complete_text(self, prompt: str, max_tokens: int = 600) -> str:
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=0.4,
+            )
+            return response.choices[0].message.content or ""
+        except Exception:  # noqa: BLE001
+            return ""

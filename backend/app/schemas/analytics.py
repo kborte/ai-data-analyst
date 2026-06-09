@@ -97,6 +97,9 @@ class AggregateTableSpec(BaseModel):
     sort_by: str | None = None
     sort_desc: bool = True
     limit: int = 500
+    # Optional: truncate date columns in group_by to this period before aggregating.
+    # Values: "month", "year", "week", "quarter", "day"
+    date_trunc_period: str | None = None
 
 
 class FilterTableSpec(BaseModel):

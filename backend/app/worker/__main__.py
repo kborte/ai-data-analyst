@@ -48,6 +48,10 @@ def main() -> None:
                 visualization_plan=db_repos.VisualizationPlanRepository(session),
                 visualization_result=db_repos.VisualizationResultRepository(session),
                 job=job_repo,
+                saved_view=db_repos.SavedViewRepository(session),
+                saved_visual=db_repos.SavedVisualRepository(session),
+                user=db_repos.UserRepository(session),
+                workspace=db_repos.WorkspaceRepository(session),
             )
             processed = run_one(job_repo, repos, storage=storage, llm=llm)
             session.commit()

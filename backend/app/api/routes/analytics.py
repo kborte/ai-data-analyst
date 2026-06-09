@@ -125,6 +125,7 @@ def ask_analytics(
             workspace_id=dataset.workspace_id,
             dataset_id=dataset_id,
             storage=storage,
+            context=context,
         )
 
     return AnalyticsResponse(

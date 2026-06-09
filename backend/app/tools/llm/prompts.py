@@ -214,6 +214,46 @@ ANALYTICS_PLANNER_SCHEMA: dict[str, Any] = {
 }
 
 
+def analytics_text_answer_prompt(question: str, context: DatasetContext) -> str:
+    """
+    Prompt for a conversational text answer to a meta or explanatory question.
+    Sends column schema only — no raw data values.
+    """
+    table_lines: list[str] = []
+    for t in context.tables:
+        col_parts = []
+        for c in t.columns:
+            roles = []
+            if c.is_likely_metric:
+                roles.append("metric")
+            if c.is_likely_date:
+                roles.append("date")
+            if c.is_likely_categorical:
+                roles.append("categorical")
+            if c.is_likely_id:
+                roles.append("id")
+            role_str = "/".join(roles) if roles else "other"
+            col_parts.append(f"  - {c.column_name} ({c.data_type}, {role_str})")
+        rows_info = f"{t.row_count} rows" if t.row_count is not None else "unknown rows"
+        table_lines.append(
+            f"Table: {t.table_name} ({rows_info})\n" + "\n".join(col_parts)
+        )
+
+    tables_block = "\n\n".join(table_lines) if table_lines else "(no tables available)"
+
+    return (
+        f"You are an AI data analyst assistant. "
+        f"The user is working with the dataset \"{context.dataset_name}\".\n\n"
+        f"Dataset schema:\n{tables_block}\n\n"
+        f"User question: {question}\n\n"
+        "Answer conversationally and helpfully. "
+        "Focus on what the data contains, what questions can be answered, "
+        "what metrics or dimensions are available, and what patterns might be worth exploring. "
+        "Do not produce SQL or code. "
+        "Keep the answer under 200 words."
+    )
+
+
 def analytics_planner_prompt(question: str, context: DatasetContext) -> str:
     table_lines: list[str] = []
     for t in context.tables:

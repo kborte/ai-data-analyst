@@ -45,7 +45,11 @@ from app.tools.analytics.query_tools import (
     run_preview_table,
     run_simple_join,
 )
-from app.tools.llm.prompts import ANALYTICS_PLANNER_SCHEMA, analytics_planner_prompt
+from app.tools.llm.prompts import (
+    ANALYTICS_PLANNER_SCHEMA,
+    analytics_planner_prompt,
+    analytics_text_answer_prompt,
+)
 from app.tools.llm.provider import FakeLLMProvider, LLMProvider
 
 # ---------------------------------------------------------------------------
@@ -185,6 +189,92 @@ def _chart_type_from_question(question: str) -> str:
     return "bar"
 
 
+# Maps question keywords to substrings that should appear in column names.
+# Ordered from most specific to least specific within each group.
+_KEYWORD_COL_HINTS: list[tuple[frozenset[str], list[str]]] = [
+    (frozenset(["country", "countries", "nation", "nations"]),   ["country", "nation"]),
+    (frozenset(["state", "states", "region", "regions"]),        ["state", "region"]),
+    (frozenset(["city", "cities"]),                              ["city"]),
+    (frozenset(["product", "products", "item", "items", "sku"]), ["product", "item", "sku", "category"]),
+    (frozenset(["channel", "channels", "touchpoint"]),           ["channel", "touchpoint"]),
+    (frozenset(["customer", "customers", "segment"]),            ["customer", "segment", "cust"]),
+    (frozenset(["gender"]),                                      ["gender"]),
+    (frozenset(["generation"]),                                  ["generation"]),
+    (frozenset(["status"]),                                      ["status"]),
+    (frozenset(["type"]),                                        ["type"]),
+]
+
+# Temporal period keywords: question word → date_trunc_period value
+_TEMPORAL_KEYWORDS: dict[str, str] = {
+    "month":   "month",
+    "monthly": "month",
+    "months":  "month",
+    "year":    "year",
+    "yearly":  "year",
+    "annual":  "year",
+    "annually":"year",
+    "years":   "year",
+    "week":    "week",
+    "weekly":  "week",
+    "weeks":   "week",
+    "quarter": "quarter",
+    "quarterly":"quarter",
+    "quarters":"quarter",
+    "day":     "day",
+    "daily":   "day",
+    "days":    "day",
+}
+
+
+def _detect_temporal_period(question: str) -> str | None:
+    """Return the date truncation period implied by the question, or None."""
+    for word in _words(question):
+        if word in _TEMPORAL_KEYWORDS:
+            return _TEMPORAL_KEYWORDS[word]
+    return None
+
+
+def _question_hinted_groupby(
+    question: str,
+    table: "DatasetContextTable",
+    fallback: list[str],
+) -> list[str]:
+    """
+    Return up to 2 columns that best match the question's grouping keywords.
+    Temporal keywords (month/year/week/…) map to date columns.
+    Domain keywords (country/state/…) map to matching categorical columns.
+    Falls back to the default categorical columns when no keyword matches.
+    """
+    q_words = _words(question)
+    cat_col_names = {c.column_name for c in table.columns if c.is_likely_categorical}
+    date_col_names = [c.column_name for c in table.columns if c.is_likely_date]
+    all_col_names_lower = {c.column_name.lower(): c.column_name for c in table.columns}
+
+    # Temporal period: "by month" / "over time" → pick the primary date column
+    if _detect_temporal_period(question) and date_col_names:
+        # Prefer ORDER_DATE / date / created_at style; take first date column
+        preferred = next(
+            (c for c in date_col_names if "order" in c.lower() or "date" in c.lower()),
+            date_col_names[0],
+        )
+        return [preferred]
+
+    chosen: list[str] = []
+    for kw_set, col_hints in _KEYWORD_COL_HINTS:
+        if not (kw_set & q_words):
+            continue
+        for hint in col_hints:
+            matched = [
+                orig for lower, orig in all_col_names_lower.items()
+                if hint in lower and orig in cat_col_names and orig not in chosen
+            ]
+            chosen.extend(matched)
+        if len(chosen) >= 2:
+            break
+
+    return chosen[:2] if chosen else fallback[:2]
+
+
 def _build_rule_based_spec(
     intent: AnalyticsIntent,
     question: str,
@@ -218,15 +308,18 @@ def _build_rule_based_spec(
         )
 
     if intent in (AnalyticsIntent.table_result, AnalyticsIntent.mixed_result):
-        gb = _groupby_cols(table)
+        default_gb = _groupby_cols(table)
+        gb = _question_hinted_groupby(question, table, default_gb)
         metrics = _metric_cols(table)
         if gb and metrics:
+            period = _detect_temporal_period(question)
             return AggregateTableSpec(
                 table_name=table.table_name,
-                group_by=gb[:2],
+                group_by=gb,
                 metrics=[MetricSpec(column=metrics[0], aggregation=AllowedAggregation.sum)],
-                sort_by=metrics[0],
-                sort_desc=True,
+                sort_by=gb[0] if period else metrics[0],
+                sort_desc=False if period else True,
+                date_trunc_period=period,
             )
         return PreviewTableSpec(table_name=table.table_name)
 
@@ -289,7 +382,8 @@ def _apply_llm_hint(
                     group_by=gb,
                     metrics=[MetricSpec(column=metric, aggregation=agg)],
                 )
-            return PreviewTableSpec(table_name=table_name)
+            # LLM couldn't provide useful columns — let rule-based spec stand.
+            return None
 
     except Exception:  # noqa: BLE001
         return None
@@ -349,6 +443,7 @@ class AnalyticsPlanner:
 
         return AnalyticsPlan(
             intent=intent,
+            question=question,
             dataset_id=context.dataset_id,
             dataset_version_id=context.dataset_version_id,
             reasoning_summary=reasoning,
@@ -368,6 +463,7 @@ class AnalyticsPlanner:
         storage: Any = None,
         view_repo: Any = None,
         visual_repo: Any = None,
+        context: "DatasetContext | None" = None,
     ) -> TextOutput | TableOutput | VisualOutput | MixedOutput:
         """Run M12C tools for the plan. Nothing is saved automatically."""
         version_id = plan.dataset_version_id
@@ -389,6 +485,11 @@ class AnalyticsPlanner:
         if plan.intent == AnalyticsIntent.save_visual_result:
             return _execute_save_visual(plan, version_id, title, visual_repo)
 
+        # For conversational/explanatory questions, call the LLM directly instead
+        # of running a data tool and dumping raw rows into a text response.
+        if plan.intent == AnalyticsIntent.text_answer:
+            return self._execute_text_answer(plan, context, version_id, title)
+
         common = dict(
             db_path=db_path,
             dataset_version_id=version_id,
@@ -402,15 +503,9 @@ class AnalyticsPlanner:
             spec = plan.tool_spec
             match spec.tool_name:
                 case "preview_table":
-                    result = run_preview_table(spec=spec, **common)
-                    if plan.intent == AnalyticsIntent.text_answer:
-                        return _table_to_text(result, version_id, title)
-                    return result
+                    return run_preview_table(spec=spec, **common)
                 case "aggregate_table":
-                    result = run_aggregate_table(spec=spec, **common)
-                    if plan.intent == AnalyticsIntent.text_answer:
-                        return _table_to_text(result, version_id, title)
-                    return result
+                    return run_aggregate_table(spec=spec, **common)
                 case "filter_table":
                     return run_filter_table(spec=spec, **common)
                 case "simple_join":
@@ -435,6 +530,45 @@ class AnalyticsPlanner:
                 title="Tool error",
                 content=str(exc),
             )
+
+    def _execute_text_answer(
+        self,
+        plan: AnalyticsPlan,
+        context: "DatasetContext | None",
+        version_id: UUID,
+        title: str,
+    ) -> TextOutput:
+        if context is not None and self._llm.is_available():
+            prompt = analytics_text_answer_prompt(plan.question, context)
+            answer = self._llm.complete_text(prompt, max_tokens=400)
+            if answer:
+                return TextOutput(dataset_version_id=version_id, title=title, content=answer)
+
+        # LLM unavailable or returned nothing — build a schema-based summary.
+        if context is None or not context.tables:
+            return TextOutput(
+                dataset_version_id=version_id,
+                title=title,
+                content="No dataset context available to answer this question.",
+            )
+        parts: list[str] = [f'Dataset "{context.dataset_name}" contains:']
+        for t in context.tables:
+            rows_info = f"{t.row_count} rows" if t.row_count is not None else "an unknown number of rows"
+            metrics = [c.column_name for c in t.columns if c.is_likely_metric]
+            cats = [c.column_name for c in t.columns if c.is_likely_categorical]
+            dates = [c.column_name for c in t.columns if c.is_likely_date]
+            parts.append(f'\nTable "{t.table_name}" — {rows_info}, {len(t.columns)} columns.')
+            if metrics:
+                parts.append(f"  Metrics you can aggregate: {', '.join(metrics[:6])}.")
+            if cats:
+                parts.append(f"  Dimensions to group by: {', '.join(cats[:6])}.")
+            if dates:
+                parts.append(f"  Date columns for time-series: {', '.join(dates[:3])}.")
+        return TextOutput(
+            dataset_version_id=version_id,
+            title=title,
+            content=" ".join(parts),
+        )
 
 
 # ---------------------------------------------------------------------------

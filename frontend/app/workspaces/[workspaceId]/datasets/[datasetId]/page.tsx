@@ -4,6 +4,10 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   analyticsAsk,
+  createCleaningPlan,
+  createFeaturePlan,
+  executeCleaningPlan,
+  executeFeaturePlan,
   getDataset,
   listVersions,
   listTables,
@@ -19,16 +23,19 @@ import {
 } from "@/lib/api";
 import type {
   AnalyticsOutput,
+  CleaningPlan,
   Dataset,
   DatasetFile,
   DatasetVersion,
   DatasetTable,
   DataProfile,
+  FeaturePlan,
   SavedView,
   SavedVisual,
   TableOutput,
   VisualOutput,
 } from "@/lib/types";
+import { getCurrentUser } from "@/lib/store";
 
 type Tab = "chat" | "views" | "visuals" | "tables" | "versions";
 
@@ -214,7 +221,7 @@ export default function DatasetPage() {
           <div className="min-h-48">
             {loadingTab && <p className="text-sm text-gray-400">Loading…</p>}
             {tab === "chat" && selectedVersionId && (
-              <ChatPanel datasetId={datasetId} versionId={selectedVersionId} />
+              <ChatPanel datasetId={datasetId} versionId={selectedVersionId} workspaceId={workspaceId} />
             )}
             {tab === "chat" && !selectedVersionId && (
               <p className="text-sm text-gray-400">Upload a file first to start chatting.</p>
@@ -595,42 +602,132 @@ function VisualsPanel({ visuals }: { visuals: SavedVisual[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Chat / Analytics Ask (FE1G-H)
+// Chat — types and intent detection
+// ---------------------------------------------------------------------------
+
+type ChatMessage =
+  | { id: string; role: "user"; text: string }
+  | { id: string; role: "assistant"; kind: "analytics"; output: AnalyticsOutput }
+  | { id: string; role: "assistant"; kind: "cleaning-plan"; plan: CleaningPlan; datasetId: string; versionId: string; workspaceId: string; userId: string }
+  | { id: string; role: "assistant"; kind: "feature-plan"; plan: FeaturePlan; datasetId: string; versionId: string; workspaceId: string; userId: string }
+  | { id: string; role: "assistant"; kind: "text"; text: string }
+  | { id: string; role: "assistant"; kind: "error"; text: string };
+
+const _CLEANING_KEYWORDS = [
+  "clean", "fix data", "fix missing", "handle null", "remove duplicate",
+  "deduplic", "data quality", "improve data", "inconsistenc", "quality issue",
+  "data issue", "missing value", "null value", "fix null", "tidy",
+];
+const _FEATURE_KEYWORDS = [
+  "add feature", "add column", "add metric", "new column",
+  "feature engineer", "derived column", "create metric",
+  "calculate column", "add kpi",
+];
+
+function detectChatIntent(q: string): "cleaning" | "feature" | "analytics" {
+  const lower = q.toLowerCase();
+  if (_CLEANING_KEYWORDS.some((k) => lower.includes(k))) return "cleaning";
+  if (_FEATURE_KEYWORDS.some((k) => lower.includes(k))) return "feature";
+  return "analytics";
+}
+
+// ---------------------------------------------------------------------------
+// ChatPanel
 // ---------------------------------------------------------------------------
 
 function ChatPanel({
   datasetId,
   versionId,
+  workspaceId,
 }: {
   datasetId: string;
   versionId: string;
+  workspaceId: string;
 }) {
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [output, setOutput] = useState<AnalyticsOutput | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  function push(msg: ChatMessage) {
+    setMessages((prev) => [...prev, msg]);
+  }
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   async function ask() {
-    if (!question.trim()) return;
+    const q = question.trim();
+    if (!q || loading) return;
     setLoading(true);
-    setError(null);
-    setOutput(null);
+    setQuestion("");
+    const base = crypto.randomUUID();
+    push({ id: `${base}-u`, role: "user", text: q });
+
     try {
-      const res = await analyticsAsk(datasetId, versionId, question.trim());
-      setOutput(res.output);
+      const intent = detectChatIntent(q);
+
+      if (intent === "cleaning" || intent === "feature") {
+        const profiles = await listProfiles(datasetId, versionId);
+        if (profiles.length === 0) {
+          push({ id: `${base}-r`, role: "assistant", kind: "text", text: "No profile found for this version. Run profiling first (click the Versions tab and choose Profile)." });
+          return;
+        }
+        const profileId = profiles[0].profile_id;
+        const user = getCurrentUser();
+        const userId = user?.user_id ?? "";
+
+        if (intent === "cleaning") {
+          const plan = await createCleaningPlan(datasetId, versionId, profileId);
+          if (plan.plan_json.steps.length === 0) {
+            push({ id: `${base}-r`, role: "assistant", kind: "text", text: "No data quality issues found — your data looks clean!" });
+          } else {
+            push({ id: `${base}-r`, role: "assistant", kind: "cleaning-plan", plan, datasetId, versionId, workspaceId, userId });
+          }
+        } else {
+          const plan = await createFeaturePlan(datasetId, versionId, profileId);
+          if (plan.plan_json.features.length === 0) {
+            push({ id: `${base}-r`, role: "assistant", kind: "text", text: "No additional features were suggested for this dataset." });
+          } else {
+            push({ id: `${base}-r`, role: "assistant", kind: "feature-plan", plan, datasetId, versionId, workspaceId, userId });
+          }
+        }
+      } else {
+        const res = await analyticsAsk(datasetId, versionId, q);
+        push({ id: `${base}-r`, role: "assistant", kind: "analytics", output: res.output });
+      }
     } catch (e) {
-      setError(String(e));
+      push({ id: `${base}-e`, role: "assistant", kind: "error", text: String(e) });
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex gap-2">
+    <div className="flex flex-col" style={{ height: "620px" }}>
+      <div className="flex-1 overflow-y-auto space-y-3 pb-2 pr-1">
+        {messages.length === 0 && (
+          <p className="text-sm text-gray-400 py-4">
+            Ask a question about your data, say &quot;clean my data&quot; to review quality issues, or &quot;add features&quot; to get metric suggestions.
+          </p>
+        )}
+        {messages.map((msg) => (
+          <MessageBubble
+            key={msg.id}
+            msg={msg}
+            datasetId={datasetId}
+            versionId={versionId}
+            onAppend={push}
+          />
+        ))}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="mt-3 flex gap-2 border-t border-gray-100 pt-3">
         <input
           className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="Ask a question about your dataset…"
+          placeholder="Ask a question, or say 'clean my data' / 'add features'…"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !loading && ask()}
@@ -641,26 +738,487 @@ function ChatPanel({
           disabled={loading || !question.trim()}
           className="bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
         >
-          {loading ? "Thinking…" : "Ask"}
+          {loading ? "Thinking…" : "Send"}
         </button>
       </div>
+    </div>
+  );
+}
 
-      {error && (
-        <p className="text-sm text-red-500 bg-red-50 border border-red-100 rounded-lg px-4 py-3">
-          {error}
-        </p>
-      )}
+// ---------------------------------------------------------------------------
+// MessageBubble — routes each message to the right renderer
+// ---------------------------------------------------------------------------
 
-      {output && (
-        <OutputCard
-          output={output}
-          datasetId={datasetId}
-          versionId={versionId}
+function MessageBubble({
+  msg,
+  datasetId,
+  versionId,
+  onAppend,
+}: {
+  msg: ChatMessage;
+  datasetId: string;
+  versionId: string;
+  onAppend: (m: ChatMessage) => void;
+}) {
+  if (msg.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="bg-blue-600 text-white text-sm rounded-2xl rounded-tr-sm px-4 py-2 max-w-xl whitespace-pre-wrap">
+          {msg.text}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.kind === "text") {
+    return (
+      <div className="flex justify-start">
+        <div className="bg-white border border-gray-200 text-sm rounded-2xl rounded-tl-sm px-4 py-3 max-w-xl text-gray-700 whitespace-pre-wrap">
+          {msg.text}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.kind === "error") {
+    return (
+      <div className="flex justify-start">
+        <div className="bg-red-50 border border-red-200 text-sm rounded-2xl rounded-tl-sm px-4 py-3 max-w-xl text-red-700 whitespace-pre-wrap">
+          {msg.text}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.kind === "analytics") {
+    return (
+      <div className="w-full">
+        <OutputCard output={msg.output} datasetId={datasetId} versionId={versionId} />
+      </div>
+    );
+  }
+
+  if (msg.kind === "cleaning-plan") {
+    return (
+      <div className="w-full">
+        <CleaningApprovalCard
+          plan={msg.plan}
+          datasetId={msg.datasetId}
+          versionId={msg.versionId}
+          workspaceId={msg.workspaceId}
+          userId={msg.userId}
+          onResult={(text) =>
+            onAppend({ id: crypto.randomUUID(), role: "assistant", kind: "text", text })
+          }
         />
+      </div>
+    );
+  }
+
+  if (msg.kind === "feature-plan") {
+    return (
+      <div className="w-full">
+        <FeatureApprovalCard
+          plan={msg.plan}
+          datasetId={msg.datasetId}
+          versionId={msg.versionId}
+          workspaceId={msg.workspaceId}
+          userId={msg.userId}
+          onResult={(text) =>
+            onAppend({ id: crypto.randomUUID(), role: "assistant", kind: "text", text })
+          }
+        />
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// CleaningApprovalCard
+// ---------------------------------------------------------------------------
+
+const _IMPACT_STYLES: Record<string, string> = {
+  high: "bg-red-50 text-red-700",
+  medium: "bg-orange-50 text-orange-700",
+  low: "bg-green-50 text-green-700",
+};
+
+function CleaningApprovalCard({
+  plan,
+  datasetId,
+  versionId,
+  workspaceId,
+  userId,
+  onResult,
+}: {
+  plan: CleaningPlan;
+  datasetId: string;
+  versionId: string;
+  workspaceId: string;
+  userId: string;
+  onResult: (text: string) => void;
+}) {
+  const steps = plan.plan_json.steps;
+  const initialDecisions = Object.fromEntries(
+    steps.map((s) => [
+      s.step_id,
+      (s.recommendation.default_decision === "approve" ? "approve" : "reject") as "approve" | "reject",
+    ])
+  );
+  const [decisions, setDecisions] = useState<Record<string, "approve" | "reject">>(initialDecisions);
+  const [executing, setExecuting] = useState(false);
+  const [done, setDone] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  function toggle(stepId: string) {
+    if (done) return;
+    setDecisions((prev) => ({
+      ...prev,
+      [stepId]: prev[stepId] === "approve" ? "reject" : "approve",
+    }));
+  }
+
+  function approveAll() {
+    setDecisions(Object.fromEntries(steps.map((s) => [s.step_id, "approve"])));
+  }
+
+  function rejectAll() {
+    setDecisions(Object.fromEntries(steps.map((s) => [s.step_id, "reject"])));
+  }
+
+  const approvedCount = Object.values(decisions).filter((d) => d === "approve").length;
+
+  async function apply() {
+    if (approvedCount === 0) return;
+    setExecuting(true);
+    setStatusMsg("Submitting…");
+    try {
+      const decisionItems = steps.map((s) => ({
+        step_id: s.step_id,
+        decision: decisions[s.step_id],
+      }));
+      const job = await executeCleaningPlan(plan.cleaning_plan_id, {
+        workspace_id: workspaceId,
+        dataset_id: datasetId,
+        input_dataset_version_id: versionId,
+        executed_by_user_id: userId,
+        decisions: decisionItems,
+      });
+      setStatusMsg("Cleaning in progress…");
+      await pollJob(
+        job.job_id,
+        () => {
+          setDone(true);
+          setStatusMsg(null);
+          onResult(`Cleaning complete. A new cleaned copy was created. Switch to the Versions tab to see it, then select it from the version picker to analyse it.`);
+        },
+        (msg) => {
+          setStatusMsg(null);
+          setExecuting(false);
+          onResult(`Cleaning failed: ${msg}`);
+        }
+      );
+    } catch (e) {
+      setStatusMsg(null);
+      setExecuting(false);
+      onResult(`Error running cleaning: ${String(e)}`);
+    }
+  }
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-sm font-semibold text-gray-800">
+            Data quality review — {steps.length} issue{steps.length !== 1 ? "s" : ""} found
+          </p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Approve the fixes you want to apply. Rejected steps will be skipped.
+          </p>
+        </div>
+        {!done && (
+          <div className="flex gap-2 shrink-0">
+            <button
+              onClick={approveAll}
+              className="text-xs text-green-700 bg-green-50 hover:bg-green-100 px-2.5 py-1 rounded-lg font-medium transition-colors"
+            >
+              Approve all
+            </button>
+            <button
+              onClick={rejectAll}
+              className="text-xs text-gray-500 bg-gray-100 hover:bg-gray-200 px-2.5 py-1 rounded-lg font-medium transition-colors"
+            >
+              Reject all
+            </button>
+          </div>
+        )}
+      </div>
+
+      <ul className="divide-y divide-gray-50">
+        {steps.map((step) => {
+          const dec = decisions[step.step_id];
+          const approved = dec === "approve";
+          return (
+            <li
+              key={step.step_id}
+              className={`px-5 py-4 flex items-start gap-4 transition-colors ${approved ? "bg-white" : "bg-gray-50 opacity-60"}`}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="text-xs font-medium text-gray-800 uppercase tracking-wide">
+                    {step.issue.issue_type.replace(/_/g, " ")}
+                  </span>
+                  {step.issue.column_name && (
+                    <span className="font-mono text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">
+                      {step.issue.column_name}
+                    </span>
+                  )}
+                  <span
+                    className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${_IMPACT_STYLES[step.recommendation.impact_level] ?? "bg-gray-100 text-gray-600"}`}
+                  >
+                    {step.recommendation.impact_level} impact
+                  </span>
+                  {step.recommendation.requires_human_approval && (
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-yellow-50 text-yellow-700">
+                      approval required
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-600">{step.issue.description}</p>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Fix: {step.recommendation.recommended_action}
+                </p>
+                {step.issue.affected_rows_percent > 0 && (
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Affects {step.issue.affected_rows_percent.toFixed(1)}% of rows
+                  </p>
+                )}
+              </div>
+
+              {!done && (
+                <div className="flex gap-1.5 shrink-0 mt-0.5">
+                  <button
+                    onClick={() => toggle(step.step_id)}
+                    className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                      approved
+                        ? "bg-green-600 text-white border-green-600 hover:bg-green-700"
+                        : "bg-white text-gray-500 border-gray-300 hover:border-green-400 hover:text-green-600"
+                    }`}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => toggle(step.step_id)}
+                    className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                      !approved
+                        ? "bg-gray-600 text-white border-gray-600 hover:bg-gray-700"
+                        : "bg-white text-gray-500 border-gray-300 hover:border-gray-400"
+                    }`}
+                  >
+                    Reject
+                  </button>
+                </div>
+              )}
+              {done && (
+                <span className={`text-xs font-medium px-2 py-1 rounded shrink-0 ${approved ? "text-green-700 bg-green-50" : "text-gray-400 bg-gray-100"}`}>
+                  {approved ? "Applied" : "Skipped"}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      {!done && (
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center gap-3">
+          <button
+            onClick={apply}
+            disabled={executing || approvedCount === 0}
+            className="bg-blue-600 text-white text-sm font-medium px-5 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {executing ? "Applying…" : `Apply ${approvedCount} fix${approvedCount !== 1 ? "es" : ""}`}
+          </button>
+          {statusMsg && <span className="text-xs text-gray-500">{statusMsg}</span>}
+          {approvedCount === 0 && (
+            <span className="text-xs text-gray-400">Approve at least one fix to continue.</span>
+          )}
+        </div>
       )}
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// FeatureApprovalCard
+// ---------------------------------------------------------------------------
+
+function FeatureApprovalCard({
+  plan,
+  datasetId,
+  versionId,
+  workspaceId,
+  userId,
+  onResult,
+}: {
+  plan: FeaturePlan;
+  datasetId: string;
+  versionId: string;
+  workspaceId: string;
+  userId: string;
+  onResult: (text: string) => void;
+}) {
+  const features = plan.plan_json.features;
+  const initialDecisions = Object.fromEntries(
+    features.map((f) => [f.feature_id, "approve" as "approve" | "reject"])
+  );
+  const [decisions, setDecisions] = useState<Record<string, "approve" | "reject">>(initialDecisions);
+  const [executing, setExecuting] = useState(false);
+  const [done, setDone] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  function toggle(featureId: string) {
+    if (done) return;
+    setDecisions((prev) => ({
+      ...prev,
+      [featureId]: prev[featureId] === "approve" ? "reject" : "approve",
+    }));
+  }
+
+  const approvedCount = Object.values(decisions).filter((d) => d === "approve").length;
+
+  async function apply() {
+    if (approvedCount === 0) return;
+    setExecuting(true);
+    setStatusMsg("Submitting…");
+    try {
+      const decisionItems = features.map((f) => ({
+        feature_id: f.feature_id,
+        decision: decisions[f.feature_id],
+      }));
+      const job = await executeFeaturePlan(plan.feature_plan_id, {
+        workspace_id: workspaceId,
+        dataset_id: datasetId,
+        input_dataset_version_id: versionId,
+        executed_by_user_id: userId,
+        decisions: decisionItems,
+      });
+      setStatusMsg("Adding features…");
+      await pollJob(
+        job.job_id,
+        () => {
+          setDone(true);
+          setStatusMsg(null);
+          onResult(`Features added. A new copy with calculated metrics was created. Switch to the Versions tab to see it, then select it from the version picker to analyse it.`);
+        },
+        (msg) => {
+          setStatusMsg(null);
+          setExecuting(false);
+          onResult(`Feature execution failed: ${msg}`);
+        }
+      );
+    } catch (e) {
+      setStatusMsg(null);
+      setExecuting(false);
+      onResult(`Error adding features: ${String(e)}`);
+    }
+  }
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-100">
+        <p className="text-sm font-semibold text-gray-800">
+          Suggested features — {features.length} available
+        </p>
+        <p className="text-xs text-gray-400 mt-0.5">
+          Approve the features you want to add. A new copy will be created with the new columns.
+        </p>
+      </div>
+
+      <ul className="divide-y divide-gray-50">
+        {features.map((feat) => {
+          const approved = decisions[feat.feature_id] === "approve";
+          return (
+            <li
+              key={feat.feature_id}
+              className={`px-5 py-4 flex items-start gap-4 transition-colors ${approved ? "bg-white" : "bg-gray-50 opacity-60"}`}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="text-xs font-semibold text-gray-800">
+                    {feat.display_name || feat.feature_name}
+                  </span>
+                  <span className="text-[10px] font-medium text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded capitalize">
+                    {feat.operation_type.replace(/_/g, " ")}
+                  </span>
+                </div>
+                {feat.description && (
+                  <p className="text-xs text-gray-600">{feat.description}</p>
+                )}
+                {feat.formula_display && (
+                  <p className="text-xs font-mono text-gray-400 mt-0.5 bg-gray-50 px-2 py-0.5 rounded inline-block">
+                    {feat.formula_display}
+                  </p>
+                )}
+              </div>
+
+              {!done && (
+                <div className="flex gap-1.5 shrink-0 mt-0.5">
+                  <button
+                    onClick={() => toggle(feat.feature_id)}
+                    className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                      approved
+                        ? "bg-green-600 text-white border-green-600 hover:bg-green-700"
+                        : "bg-white text-gray-500 border-gray-300 hover:border-green-400 hover:text-green-600"
+                    }`}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => toggle(feat.feature_id)}
+                    className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                      !approved
+                        ? "bg-gray-600 text-white border-gray-600 hover:bg-gray-700"
+                        : "bg-white text-gray-500 border-gray-300 hover:border-gray-400"
+                    }`}
+                  >
+                    Reject
+                  </button>
+                </div>
+              )}
+              {done && (
+                <span className={`text-xs font-medium px-2 py-1 rounded shrink-0 ${approved ? "text-green-700 bg-green-50" : "text-gray-400 bg-gray-100"}`}>
+                  {approved ? "Added" : "Skipped"}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      {!done && (
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center gap-3">
+          <button
+            onClick={apply}
+            disabled={executing || approvedCount === 0}
+            className="bg-purple-600 text-white text-sm font-medium px-5 py-2 rounded-lg hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {executing ? "Adding…" : `Add ${approvedCount} feature${approvedCount !== 1 ? "s" : ""}`}
+          </button>
+          {statusMsg && <span className="text-xs text-gray-500">{statusMsg}</span>}
+          {approvedCount === 0 && (
+            <span className="text-xs text-gray-400">Approve at least one feature to continue.</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OutputCard and table/visual sub-cards (used inside MessageBubble)
+// ---------------------------------------------------------------------------
 
 function OutputCard({
   output,
@@ -686,23 +1244,11 @@ function OutputCard({
   }
 
   if (output.output_type === "table") {
-    return (
-      <TableOutputCard
-        output={output}
-        datasetId={datasetId}
-        versionId={versionId}
-      />
-    );
+    return <TableOutputCard output={output} datasetId={datasetId} versionId={versionId} />;
   }
 
   if (output.output_type === "visual") {
-    return (
-      <VisualOutputCard
-        output={output}
-        datasetId={datasetId}
-        versionId={versionId}
-      />
-    );
+    return <VisualOutputCard output={output} datasetId={datasetId} versionId={versionId} />;
   }
 
   if (output.output_type === "mixed") {
@@ -762,9 +1308,7 @@ function TableOutputCard({
             <p className="text-xs text-gray-400 mt-0.5">{output.description}</p>
           )}
         </div>
-        <span className="text-xs text-gray-400">
-          {output.row_count.toLocaleString()} rows
-        </span>
+        <span className="text-xs text-gray-400">{output.row_count.toLocaleString()} rows</span>
       </div>
 
       <div className="overflow-x-auto">
@@ -792,10 +1336,7 @@ function TableOutputCard({
 
       <div className="px-5 py-3 border-t border-gray-100 flex items-center gap-3 flex-wrap">
         {!showSave && (
-          <button
-            onClick={() => setShowSave(true)}
-            className="text-xs text-blue-600 hover:underline"
-          >
+          <button onClick={() => setShowSave(true)} className="text-xs text-blue-600 hover:underline">
             Save as view
           </button>
         )}
@@ -814,10 +1355,7 @@ function TableOutputCard({
             >
               {saving ? "Saving…" : "Save"}
             </button>
-            <button
-              onClick={() => setShowSave(false)}
-              className="text-xs text-gray-400 hover:text-gray-600"
-            >
+            <button onClick={() => setShowSave(false)} className="text-xs text-gray-400 hover:text-gray-600">
               Cancel
             </button>
           </>
@@ -913,10 +1451,7 @@ function VisualOutputCard({
 
       <div className="px-5 py-3 border-t border-gray-100 flex items-center gap-3 flex-wrap">
         {!showSave && (
-          <button
-            onClick={() => setShowSave(true)}
-            className="text-xs text-purple-600 hover:underline"
-          >
+          <button onClick={() => setShowSave(true)} className="text-xs text-purple-600 hover:underline">
             Save visual
           </button>
         )}
@@ -935,10 +1470,7 @@ function VisualOutputCard({
             >
               {saving ? "Saving…" : "Save"}
             </button>
-            <button
-              onClick={() => setShowSave(false)}
-              className="text-xs text-gray-400 hover:text-gray-600"
-            >
+            <button onClick={() => setShowSave(false)} className="text-xs text-gray-400 hover:text-gray-600">
               Cancel
             </button>
           </>

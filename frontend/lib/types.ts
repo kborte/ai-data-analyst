@@ -149,3 +149,71 @@ export interface AnalyticsResponse {
   question: string;
   output: AnalyticsOutput;
 }
+
+// ---------------------------------------------------------------------------
+// Cleaning plan
+// ---------------------------------------------------------------------------
+
+export interface CleaningIssue {
+  issue_type: string;
+  table_name: string;
+  column_name: string | null;
+  description: string;
+  affected_rows_count: number;
+  affected_rows_percent: number;
+}
+
+export interface CleaningRecommendation {
+  action_type: string;
+  recommended_action: string;
+  rationale: string;
+  impact_level: string;
+  affects_key_metrics: boolean;
+  requires_human_approval: boolean;
+  default_decision: string;
+}
+
+export interface CleaningStep {
+  step_id: string;
+  sequence_order: number;
+  issue: CleaningIssue;
+  recommendation: CleaningRecommendation;
+}
+
+export interface CleaningPlan {
+  cleaning_plan_id: string;
+  dataset_version_id: string;
+  status: string;
+  plan_json: {
+    steps: CleaningStep[];
+    summary?: {
+      total_steps: number;
+      steps_requiring_approval: number;
+    };
+  };
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Feature plan
+// ---------------------------------------------------------------------------
+
+export interface FeatureDefinition {
+  feature_id: string;
+  feature_name: string;
+  display_name: string;
+  description: string;
+  operation_type: string;
+  formula_display: string;
+  requires_human_approval: boolean;
+}
+
+export interface FeaturePlan {
+  feature_plan_id: string;
+  dataset_version_id: string;
+  status: string;
+  plan_json: {
+    features: FeatureDefinition[];
+  };
+  created_at: string;
+}

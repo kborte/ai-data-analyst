@@ -1,10 +1,12 @@
 import type {
   AnalyticsResponse,
+  CleaningPlan,
   Dataset,
   DatasetFile,
   DatasetVersion,
   DatasetTable,
   DataProfile,
+  FeaturePlan,
   SavedView,
   SavedVisual,
   Job,
@@ -225,6 +227,66 @@ export async function saveVisualToVisuals(payload: {
   chart_spec_json: Record<string, unknown>;
 }): Promise<SavedVisual> {
   return post("/analytics/visual-results/save-as-visual", payload);
+}
+
+// ── Cleaning ─────────────────────────────────────────────────────────────────
+
+export async function createCleaningPlan(
+  datasetId: string,
+  versionId: string,
+  profileId: string
+): Promise<CleaningPlan> {
+  return post(`/datasets/${datasetId}/versions/${versionId}/cleaning-plans`, {
+    profile_id: profileId,
+  });
+}
+
+export interface CleaningDecisionItem {
+  step_id: string;
+  decision: "approve" | "reject";
+}
+
+export async function executeCleaningPlan(
+  planId: string,
+  payload: {
+    workspace_id: string;
+    dataset_id: string;
+    input_dataset_version_id: string;
+    executed_by_user_id: string;
+    decisions: CleaningDecisionItem[];
+  }
+): Promise<Job> {
+  return post(`/cleaning-plans/${planId}/execute`, payload);
+}
+
+// ── Features ─────────────────────────────────────────────────────────────────
+
+export async function createFeaturePlan(
+  datasetId: string,
+  versionId: string,
+  profileId: string
+): Promise<FeaturePlan> {
+  return post(`/datasets/${datasetId}/versions/${versionId}/feature-plans`, {
+    profile_id: profileId,
+  });
+}
+
+export interface FeatureDecisionItem {
+  feature_id: string;
+  decision: "approve" | "reject";
+}
+
+export async function executeFeaturePlan(
+  planId: string,
+  payload: {
+    workspace_id: string;
+    dataset_id: string;
+    input_dataset_version_id: string;
+    executed_by_user_id: string;
+    decisions: FeatureDecisionItem[];
+  }
+): Promise<Job> {
+  return post(`/feature-plans/${planId}/execute`, payload);
 }
 
 export async function pollJob(

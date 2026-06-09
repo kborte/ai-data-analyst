@@ -136,7 +136,7 @@ def execute_cleaning_plan(
             "cleaning_plan_id": str(cleaning_plan_id),
             "decisions_id": str(uuid4()),
             "executed_by_user_id": str(body.executed_by_user_id),
-            "decisions": [d.model_dump() for d in body.decisions],
+            "decisions": [d.model_dump(mode="json") for d in body.decisions],
         },
         created_at=datetime.now(tz=UTC),
     )

@@ -142,6 +142,17 @@ ai-data-analyst/
 | `POST` | `/datasets/{did}/versions/{vid}/visualization-plans` | Generate visualization plan |
 | `POST` | `/visualization-plans/{vid}/decisions/validate` | Submit chart decisions |
 | `POST` | `/visualization-plans/{vid}/generate` | Generate chart data |
+| `GET` | `/datasets/{did}/versions/{vid}/views` | List saved views for a version |
+| `POST` | `/datasets/{did}/versions/{vid}/views` | Save a new view |
+| `GET` | `/views/{vid}` | Get saved view metadata |
+| `DELETE` | `/views/{vid}` | Delete a saved view |
+| `GET` | `/views/{vid}/preview` | Preview up to 100 rows |
+| `GET` | `/views/{vid}/download?format=csv` | Download view artifact |
+| `GET` | `/datasets/{did}/versions/{vid}/visuals` | List saved visuals for a version |
+| `POST` | `/datasets/{did}/versions/{vid}/visuals` | Save a new visual |
+| `GET` | `/visuals/{vid}` | Get saved visual metadata |
+| `DELETE` | `/visuals/{vid}` | Delete a saved visual |
+| `GET` | `/visuals/{vid}/data` | Get chart spec and data |
 
 Interactive docs at `http://localhost:8000/docs` when the backend is running.
 
@@ -268,3 +279,54 @@ cd backend
 ruff check app/
 ruff format app/
 ```
+
+---
+
+## Saved Views and Saved Visuals
+
+### Concepts
+
+A **SavedView** is a user-saved, reusable table-like result. Examples: revenue grouped by month and channel, a filtered high-value customers table, a joined orders-customers summary. View data is stored as a file artifact (CSV/Parquet) in the storage backend; Postgres stores only the metadata and storage path.
+
+A **SavedVisual** is a user-saved, reusable chart result. Examples: a line chart of revenue over time, a bar chart of spend by channel. The chart spec is stored as JSONB in Postgres; larger chart data may optionally point to a storage artifact.
+
+### SavedView vs a generated table result
+
+Generating a table output — from a chat query, an aggregation route, or a feature result — does **not** automatically create a `SavedView`. A `SavedView` is only created by an explicit user action: calling `POST .../views` or one of the service-layer helpers. One-time table outputs can be downloaded as CSV without being saved as a view.
+
+### SavedVisual vs VisualizationResult
+
+A `VisualizationResult` is the raw execution output of a `VisualizationPlan`. It is a job artifact and may be temporary or plan-linked. A `SavedVisual` is the user-promoted, reusable version of a chart that appears in the dataset Visuals tab. Promoting a `VisualizationResult` to a `SavedVisual` requires an explicit user action — not every generated chart becomes a saved visual.
+
+### Version scoping
+
+Every `SavedView` and `SavedVisual` is scoped to the `dataset_version_id` it was created from. If a view or visual was created from an older dataset version it retains that version reference — it is never silently re-scoped to the current version. This preserves artifact lineage.
+
+### Explicit-save helpers
+
+Four helpers in `app/services/saved_artifacts.py` allow other services to create saved artifacts without going through the HTTP layer:
+
+| Helper | Creates |
+|---|---|
+| `save_view_from_table_result` | `SavedView` from in-memory columns and rows; uploads CSV to storage |
+| `save_view_from_storage_artifact` | `SavedView` pointing at an already-existing storage artifact |
+| `save_visual_from_chart_spec` | `SavedVisual` from an in-memory `ChartSpec` |
+| `save_visual_from_visualization_result` | `SavedVisual` from an existing `VisualizationResult` |
+
+All four helpers require the caller to pass `workspace_id`, `dataset_id`, and `dataset_version_id` explicitly. Nothing is saved automatically.
+
+### Storage behavior
+
+- Saved view data is written to `workspaces/{wid}/datasets/{did}/views/{view_id}.{fmt}`.
+- Saved visual chart specs are stored inline in Postgres JSONB when small.
+- Postgres stores metadata and storage pointers only — no large row data is written to the database.
+- Deleting a saved view or visual removes both the metadata record and the storage artifact where applicable.
+
+### What is intentionally not in scope
+
+- Frontend implementation (views/visuals tabs are a future frontend milestone)
+- Dataset chat backend
+- Dynamic dashboards or drag-and-drop layouts
+- PNG server-side generation — PNG download is a client-side feature
+- Supabase Auth
+- LLM calls

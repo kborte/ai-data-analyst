@@ -247,7 +247,7 @@ class DataSourceRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _data_source_from_orm(merged)
 
     def get(self, data_source_id: UUID) -> DataSource | None:
@@ -280,7 +280,7 @@ class UploadedFileRepository:
             uploaded_at=obj.uploaded_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _uploaded_file_from_orm(merged)
 
     def get(self, file_id: UUID) -> UploadedFile | None:
@@ -310,7 +310,7 @@ class DatasetRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _dataset_from_orm(merged)
 
     def get(self, dataset_id: UUID) -> Dataset | None:
@@ -338,7 +338,7 @@ class DatasetSourceRepository:
             source_role=str(obj.role),
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _dataset_source_from_orm(merged)
 
     def get(self, dataset_source_id: UUID) -> DatasetSource | None:
@@ -375,7 +375,7 @@ class DatasetVersionRepository:
             obj_metadata=obj.metadata,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _dataset_version_from_orm(merged)
 
     def get(self, dataset_version_id: UUID) -> DatasetVersion | None:
@@ -405,7 +405,7 @@ class DatasetTableRepository:
             column_count=obj.column_count,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _dataset_table_from_orm(merged)
 
     def get(self, table_id: UUID) -> DatasetTable | None:
@@ -436,7 +436,7 @@ class ContextDocumentRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _context_document_from_orm(merged)
 
     def get(self, context_document_id: UUID) -> ContextDocument | None:
@@ -475,7 +475,7 @@ class DataProfileRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _data_profile_from_orm(merged)
 
     def get(self, profile_id: UUID) -> DataProfile | None:
@@ -509,7 +509,7 @@ class CleaningPlanRepository:
             created_by_user_id=None,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _cleaning_plan_from_orm(merged)
 
     def get(self, cleaning_plan_id: UUID) -> CleaningPlan | None:
@@ -546,7 +546,7 @@ class CleaningResultRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _cleaning_result_from_orm(merged)
 
     def get(self, cleaning_result_id: UUID) -> CleaningResult | None:
@@ -580,7 +580,7 @@ class FeaturePlanRepository:
             created_by_user_id=None,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _feature_plan_from_orm(merged)
 
     def get(self, feature_plan_id: UUID) -> FeaturePlan | None:
@@ -614,7 +614,7 @@ class FeatureResultRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _feature_result_from_orm(merged)
 
     def get(self, feature_result_id: UUID) -> FeatureResult | None:
@@ -656,7 +656,7 @@ class CleaningDecisionsRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _cleaning_decisions_from_orm(merged)
 
     def get(self, cleaning_decisions_id: UUID) -> CleaningDecisions | None:
@@ -695,7 +695,7 @@ class FeatureDecisionsRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _feature_decisions_from_orm(merged)
 
     def get(self, feature_decisions_id: UUID) -> FeatureDecisions | None:
@@ -749,7 +749,7 @@ class VisualizationPlanRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _visualization_plan_from_orm(merged)
 
     def get(self, visualization_plan_id: UUID) -> VisualizationPlan | None:
@@ -782,7 +782,7 @@ class VisualizationResultRepository:
             created_at=obj.created_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _visualization_result_from_orm(merged)
 
     def get(self, visualization_result_id: UUID) -> VisualizationResult | None:
@@ -841,7 +841,7 @@ class JobRepository:
             completed_at=obj.completed_at,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _job_from_orm(merged)
 
     def get(self, job_id: UUID) -> Job | None:
@@ -881,7 +881,7 @@ class JobRepository:
         row.status = "running"
         from datetime import datetime, timezone  # noqa: PLC0415
         row.started_at = datetime.now(tz=timezone.utc)
-        self._session.commit()
+        self._session.flush()
         return _job_from_orm(row)
 
 
@@ -932,7 +932,7 @@ class SavedViewRepository:
             metadata_json=obj.metadata_json,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _saved_view_from_orm(merged)
 
     def get(self, saved_view_id: UUID) -> SavedView | None:
@@ -962,7 +962,7 @@ class SavedViewRepository:
         if row is None:
             return False
         self._session.delete(row)
-        self._session.commit()
+        self._session.flush()
         return True
 
 
@@ -1015,7 +1015,7 @@ class SavedVisualRepository:
             metadata_json=obj.metadata_json,
         )
         merged = self._session.merge(row)
-        self._session.commit()
+        self._session.flush()
         return _saved_visual_from_orm(merged)
 
     def get(self, visual_id: UUID) -> SavedVisual | None:
@@ -1045,5 +1045,5 @@ class SavedVisualRepository:
         if row is None:
             return False
         self._session.delete(row)
-        self._session.commit()
+        self._session.flush()
         return True

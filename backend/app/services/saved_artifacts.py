@@ -62,7 +62,17 @@ def save_view_from_table_result(
         created_at=datetime.now(timezone.utc),
         created_by_user_id=created_by_user_id,
     )
-    return repo.save(obj)
+    try:
+        return repo.save(obj)
+    except Exception:
+        # Best-effort cleanup: storage artifact is not part of the Postgres transaction.
+        # If the DB write fails, attempt to remove the orphaned artifact.
+        # Cleanup failure must not hide the original DB error.
+        try:
+            storage.delete(path)
+        except Exception:
+            pass
+        raise
 
 
 def save_view_from_storage_artifact(

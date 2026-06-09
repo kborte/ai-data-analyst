@@ -50,7 +50,9 @@ def main() -> None:
                 job=job_repo,
             )
             processed = run_one(job_repo, repos, storage=storage, llm=llm)
+            session.commit()
         except Exception:
+            session.rollback()
             logger.exception("unexpected error in worker loop")
             processed = False
         finally:

@@ -440,10 +440,68 @@ All helpers require explicit `workspace_id`, `dataset_id`, and `dataset_version_
 
 ### What is intentionally not in scope for M12
 
-- Durable conversation persistence and chat history (M13)
+- Durable conversation persistence and chat history
 - Dataset activity timeline
 - Full autonomous agent loops
 - Dynamic dashboards
 - Arbitrary raw SQL from users or LLMs
 - Cleaning or feature engineering execution
-- Production transaction hardening (M13)
+
+---
+
+## Production Hardening (M13)
+
+### Transaction boundaries for multi-table writes
+
+All database repository `save()` calls use `session.flush()`, not `session.commit()`. A single Postgres commit happens at the end of each FastAPI request via `get_db()`, or at the end of each worker job iteration via the worker loop. This means every logical operation that writes to multiple Postgres tables (e.g. `DatasetVersion` + `DatasetTable`, `CleaningResult` + output version, `FeatureResult` + output version) commits or rolls back as one unit.
+
+If an exception escapes a request handler, `get_db()` automatically rolls back the entire transaction before closing the session. The worker loop mirrors this pattern: `session.commit()` on success, `session.rollback()` on any exception.
+
+### Supabase Storage writes are outside Postgres transactions
+
+Supabase Storage (and the local `LocalStorageBackend`) are not transactional — a file write cannot be rolled back by a Postgres `ROLLBACK`. This creates a consistency gap:
+
+```
+1. storage.save(artifact)   ← not transactional
+2. repo.save(metadata)      ← part of Postgres transaction
+```
+
+If step 2 fails, step 1 has already written the file. The metadata transaction rolls back cleanly, but the storage artifact is now orphaned (no metadata row points to it).
+
+**M13 mitigation:** services that write storage before metadata (`upload_service`, `saved_artifacts`) now catch DB failures and attempt **best-effort cleanup** — `storage.delete(path)` for each orphaned artifact. Cleanup failures are logged and swallowed so they do not hide the original DB error.
+
+**Known limitation:** best-effort cleanup is not guaranteed. If the process crashes between the storage write and the cleanup call, the orphaned artifact remains. A background cleanup job for unreferenced storage artifacts is deferred to a later milestone.
+
+### Large artifacts live in storage, not Postgres
+
+Files, DuckDB dataset version snapshots, and result artifacts (CSV exports, etc.) are stored in Supabase Storage (or local disk in dev). Postgres stores only metadata and storage path pointers. No large binary or row data is written to the database.
+
+Storage path conventions:
+
+```
+raw uploads:   workspaces/{wid}/datasets/{did}/raw_uploads/{file_id}_{filename}
+dataset versions: workspaces/{wid}/datasets/{did}/versions/v{n}_{type}.duckdb
+saved views:   workspaces/{wid}/datasets/{did}/views/{view_id}.csv
+result artifacts: workspaces/{wid}/datasets/{did}/results/{artifact_id}.csv
+```
+
+### Local temp files are scratch only
+
+DuckDB operations that need a temporary file (e.g. building a new version artifact) use the `temp_duckdb_path()` context manager, which cleans up the temp file automatically. No persistent data lives in local temp directories. The storage backend is the only durable file store.
+
+### Known limitations
+
+| Limitation | Mitigation | Deferred work |
+|---|---|---|
+| Orphaned storage artifacts on DB failure | Best-effort `storage.delete()` on error | Background cleanup job |
+| Worker: one session per poll loop, not per handler sub-operation | Handler errors trigger full session rollback | Finer-grained worker transactions if needed |
+| No distributed locking across multiple workers | Single-worker design; job claiming is designed for horizontal scale later | Multi-worker claim locking |
+| No retry on transient DB/storage failures | Errors surface to caller | Retry middleware / exponential backoff |
+
+### Deferred milestones
+
+The following are explicitly out of scope for M13 and deferred to a later optional milestone:
+
+- **Dataset activity events** — timeline of user actions and system events on a dataset
+- **Conversation persistence** — durable chat history and conversation records
+- **Background cleanup daemon** — automated removal of orphaned storage artifacts

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import io
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
+
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 
@@ -150,89 +153,102 @@ def upload_dataset(
 
     storage.save(ver_storage_path, duckdb_bytes)
 
-    # --- Persist metadata ---
-    data_source = repos.data_source.save(
-        DataSource(
-            data_source_id=ds_id,
-            workspace_id=workspace_id,
-            source_kind=DataSourceKind.uploaded_file,
-            display_name=filename,
-            created_by_user_id=SYSTEM_USER_ID,
-            created_at=now,
-        )
-    )
-    uploaded_file = repos.uploaded_file.save(
-        UploadedFile(
-            file_id=file_id,
-            workspace_id=workspace_id,
-            data_source_id=ds_id,
-            file_kind=_FILE_KIND_MAP[suffix],
-            original_filename=filename,
-            storage_path=raw_path,
-            size_bytes=len(content),
-            uploaded_by_user_id=SYSTEM_USER_ID,
-            uploaded_at=now,
-        )
-    )
-    if new_dataset:
-        repos.dataset_source.save(
-            DatasetSource(
-                dataset_source_id=uuid4(),
-                dataset_id=dataset_id,
+    # --- Persist metadata (all in one transaction via get_db()) ---
+    # Storage writes above are outside the Postgres transaction.
+    # If any metadata write fails, get_db() rolls back all DB flushes atomically.
+    # The storage artifacts then become orphaned — best-effort cleanup is attempted below.
+    try:
+        data_source = repos.data_source.save(
+            DataSource(
                 data_source_id=ds_id,
-                role=DatasetSourceRole.primary,
+                workspace_id=workspace_id,
+                source_kind=DataSourceKind.uploaded_file,
+                display_name=filename,
+                created_by_user_id=SYSTEM_USER_ID,
+                created_at=now,
             )
         )
-    else:
-        repos.dataset_source.save(
-            DatasetSource(
-                dataset_source_id=uuid4(),
-                dataset_id=dataset_id,
+        uploaded_file = repos.uploaded_file.save(
+            UploadedFile(
+                file_id=file_id,
+                workspace_id=workspace_id,
                 data_source_id=ds_id,
-                role=DatasetSourceRole.supplementary,
+                file_kind=_FILE_KIND_MAP[suffix],
+                original_filename=filename,
+                storage_path=raw_path,
+                size_bytes=len(content),
+                uploaded_by_user_id=SYSTEM_USER_ID,
+                uploaded_at=now,
             )
         )
-
-    total_rows = sum(len(df) for _, df, _ in tables_data)
-    version = repos.dataset_version.save(
-        DatasetVersion(
-            dataset_version_id=version_id,
-            dataset_id=dataset_id,
-            version_number=next_version_number,
-            version_type=DatasetVersionType.original,
-            display_name="Original upload" if next_version_number == 1 else f"Upload v{next_version_number}",
-            storage_path=ver_storage_path,
-            row_count=total_rows,
-            column_count=tables_data[0][1].shape[1],
-            created_by_user_id=SYSTEM_USER_ID,
-            created_at=now,
-        )
-    )
-
-    db_tables: list[DatasetTable] = []
-    previews: list[TablePreview] = []
-    for table_name, df, preview_rows in tables_data:
-        # storage_path is None — the table lives inside the version's .duckdb artifact
-        db_tables.append(
-            repos.dataset_table.save(
-                DatasetTable(
-                    table_id=uuid4(),
-                    dataset_version_id=version_id,
-                    table_name=table_name,
-                    storage_path=None,
-                    row_count=len(df),
-                    column_count=df.shape[1],
+        if new_dataset:
+            repos.dataset_source.save(
+                DatasetSource(
+                    dataset_source_id=uuid4(),
+                    dataset_id=dataset_id,
+                    data_source_id=ds_id,
+                    role=DatasetSourceRole.primary,
                 )
             )
-        )
-        previews.append(
-            TablePreview(
-                table_name=table_name,
-                columns=list(df.columns),
-                rows=preview_rows,
-                total_row_count=len(df),
+        else:
+            repos.dataset_source.save(
+                DatasetSource(
+                    dataset_source_id=uuid4(),
+                    dataset_id=dataset_id,
+                    data_source_id=ds_id,
+                    role=DatasetSourceRole.supplementary,
+                )
+            )
+
+        total_rows = sum(len(df) for _, df, _ in tables_data)
+        version = repos.dataset_version.save(
+            DatasetVersion(
+                dataset_version_id=version_id,
+                dataset_id=dataset_id,
+                version_number=next_version_number,
+                version_type=DatasetVersionType.original,
+                display_name="Original upload" if next_version_number == 1 else f"Upload v{next_version_number}",
+                storage_path=ver_storage_path,
+                row_count=total_rows,
+                column_count=tables_data[0][1].shape[1],
+                created_by_user_id=SYSTEM_USER_ID,
+                created_at=now,
             )
         )
+
+        db_tables: list[DatasetTable] = []
+        previews: list[TablePreview] = []
+        for table_name, df, preview_rows in tables_data:
+            # storage_path is None — the table lives inside the version's .duckdb artifact
+            db_tables.append(
+                repos.dataset_table.save(
+                    DatasetTable(
+                        table_id=uuid4(),
+                        dataset_version_id=version_id,
+                        table_name=table_name,
+                        storage_path=None,
+                        row_count=len(df),
+                        column_count=df.shape[1],
+                    )
+                )
+            )
+            previews.append(
+                TablePreview(
+                    table_name=table_name,
+                    columns=list(df.columns),
+                    rows=preview_rows,
+                    total_row_count=len(df),
+                )
+            )
+    except Exception:
+        # Best-effort: clean up orphaned storage artifacts. Cleanup failures must not
+        # hide the original DB error.
+        for orphan_path in (raw_path, ver_storage_path):
+            try:
+                storage.delete(orphan_path)
+            except Exception:
+                logger.warning("storage cleanup failed for orphaned artifact: %s", orphan_path)
+        raise
 
     return DatasetUploadResponse(
         dataset=dataset,

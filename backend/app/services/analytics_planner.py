@@ -9,11 +9,14 @@ Recent messages are consumed for follow-up resolution and never persisted.
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 from app.schemas.analytics import (
     AggregateTableSpec,
@@ -305,6 +308,98 @@ def _detect_temporal_period(question: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Top-N per group detection
+# ---------------------------------------------------------------------------
+
+# Words that signal "pick the highest-ranked item within each group".
+_TOP_N_RANK_WORDS = frozenset([
+    "most", "highest", "top", "best", "popular", "leading",
+    "frequent", "biggest", "largest", "greatest",
+])
+
+# Phrases that signal a per-group dimension ("for each country", "per region").
+_PER_GROUP_PHRASES = [
+    "for each", "per each", "within each", "in each", "by each",
+]
+
+
+def _is_top_n_per_group(question: str) -> bool:
+    """True when the question asks for the top item within each group."""
+    q = question.lower()
+    return bool(_words(q) & _TOP_N_RANK_WORDS) and any(p in q for p in _PER_GROUP_PHRASES)
+
+
+def _find_item_column(
+    question: str,
+    table: "DatasetContextTable",
+    exclude: list[str],
+) -> str | None:
+    """Return the column that represents the 'item' being ranked within each group.
+
+    Priority:
+    1. Column whose name matches product/item/sku/category keyword hints.
+    2. Highest-cardinality non-ID, non-metric, non-date column not in exclude —
+       handles 'Description' / 'ProductName' columns that profiling doesn't mark
+       as categorical because of their high unique count.
+    """
+    q_words = _words(question)
+    all_lower = {c.column_name.lower(): c.column_name for c in table.columns}
+    exclude_lower = {e.lower() for e in exclude}
+
+    # 1. Keyword hint match (product/item/sku/category/name/description)
+    item_hints = ["product", "item", "sku", "category", "name", "description", "title"]
+    for kw_set, col_hints in _KEYWORD_COL_HINTS:
+        if not (kw_set & q_words):
+            continue
+        for hint in col_hints:
+            for lower, orig in all_lower.items():
+                if hint in lower and lower not in exclude_lower:
+                    return orig
+
+    # Also scan directly for item_hints in column names regardless of question keywords.
+    for hint in item_hints:
+        for lower, orig in all_lower.items():
+            if hint in lower and lower not in exclude_lower:
+                return orig
+
+    # 2. Highest-cardinality candidate (catches 'Description', 'ProductName', etc.)
+    candidates = [
+        c for c in table.columns
+        if not c.is_likely_id
+        and not c.is_likely_metric
+        and not c.is_likely_date
+        and c.column_name.lower() not in exclude_lower
+        and c.unique_count is not None
+    ]
+    if candidates:
+        return max(candidates, key=lambda c: c.unique_count or 0).column_name
+
+    return None
+
+
+def _build_top_n_sql(table_name: str, partition_col: str, item_col: str, top_n: int = 1) -> str:
+    """Build a CTE + window-function SQL for top-N items per partition."""
+    return (
+        f'WITH freq AS (\n'
+        f'  SELECT "{partition_col}", "{item_col}", COUNT(*) AS purchase_frequency\n'
+        f'  FROM "{table_name}"\n'
+        f'  GROUP BY "{partition_col}", "{item_col}"\n'
+        f'),\n'
+        f'ranked AS (\n'
+        f'  SELECT *,\n'
+        f'    ROW_NUMBER() OVER (\n'
+        f'      PARTITION BY "{partition_col}" ORDER BY purchase_frequency DESC\n'
+        f'    ) AS _rn\n'
+        f'  FROM freq\n'
+        f')\n'
+        f'SELECT "{partition_col}", "{item_col}", purchase_frequency\n'
+        f'FROM ranked\n'
+        f'WHERE _rn <= {top_n}\n'
+        f'ORDER BY purchase_frequency DESC'
+    )
+
+
 def _question_hinted_groupby(
     question: str,
     table: "DatasetContextTable",
@@ -381,6 +476,21 @@ def _build_rule_based_spec(
         )
 
     if intent in (AnalyticsIntent.table_result, AnalyticsIntent.mixed_result):
+        # ── Top-N per group: "for each country, the most popular product" ──
+        if _is_top_n_per_group(question):
+            default_gb = _groupby_cols(table)
+            partition_cols = _question_hinted_groupby(question, table, default_gb)
+            if partition_cols:
+                partition_col = partition_cols[0]
+                item_col = _find_item_column(question, table, exclude=partition_cols)
+                if item_col:
+                    sql = _build_top_n_sql(table.table_name, partition_col, item_col)
+                    logger.info(
+                        "[planner] top-n-per-group: partition=%s item=%s table=%s",
+                        partition_col, item_col, table.table_name,
+                    )
+                    return SqlQuerySpec(sql=sql, table_name=table.table_name)
+
         default_gb = _groupby_cols(table)
         gb = _question_hinted_groupby(question, table, default_gb)
         metrics = _metric_cols(table)
@@ -536,21 +646,36 @@ class AnalyticsPlanner:
             all_refs.extend(msg.output_refs)
 
         intent = classify_intent(question, all_refs)
+        logger.info("[planner] question=%r intent=%s", question[:100], intent)
 
         # Rule-based spec (always safe fallback)
         tool_spec = _build_rule_based_spec(intent, question, context, all_refs)
+        logger.info("[planner] rule-based spec: %s", tool_spec.tool_name)
+        if hasattr(tool_spec, "sql"):
+            logger.info("[planner] rule-based SQL:\n%s", tool_spec.sql)
 
-        # Optional LLM enhancement
-        if self._llm.is_available() and intent not in (
+        # Optional LLM enhancement — skipped when rule-based already produced SqlQuerySpec
+        # for a top-N pattern (deterministic result is more reliable than LLM SQL for that case).
+        skip_llm = (
+            tool_spec.tool_name == "sql_query"
+            and intent in (AnalyticsIntent.table_result, AnalyticsIntent.mixed_result)
+        )
+        if not skip_llm and self._llm.is_available() and intent not in (
             AnalyticsIntent.save_table_result,
             AnalyticsIntent.save_visual_result,
             AnalyticsIntent.unsupported,
         ):
             prompt = analytics_planner_prompt(question, context)
             raw = self._llm.complete_structured(prompt, "analytics_plan", ANALYTICS_PLANNER_SCHEMA)
+            logger.info("[planner] LLM raw response: %r", raw)
             llm_spec = _apply_llm_hint(raw, intent, context)
             if llm_spec is not None:
+                logger.info("[planner] using LLM spec: %s", llm_spec.tool_name)
+                if hasattr(llm_spec, "sql"):
+                    logger.info("[planner] LLM SQL:\n%s", llm_spec.sql)
                 tool_spec = llm_spec
+            else:
+                logger.info("[planner] LLM hint rejected — keeping rule-based spec")
 
         reasoning = (
             f"Classified as '{intent}' based on question keywords and dataset context."

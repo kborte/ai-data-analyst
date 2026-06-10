@@ -208,7 +208,14 @@ def _interpretation(
     for out in outputs:
         otype = getattr(out, "output_type", "unknown")
         if otype == "table":
-            summaries.append(f"Table '{out.title}': {out.row_count} rows, columns: {', '.join(out.columns[:6])}")
+            header = f"Table '{out.title}': {out.row_count} rows, columns: {', '.join(out.columns[:8])}"
+            # Include up to 5 result rows so the LLM can reference actual values.
+            if getattr(out, "preview_rows", None):
+                sample = []
+                for row in out.preview_rows[:5]:
+                    sample.append(dict(zip(out.columns, row)))
+                header += f"\nSample rows: {sample}"
+            summaries.append(header)
         elif otype == "visual":
             summaries.append(f"Chart '{out.title}' ({out.chart_type})")
         elif otype == "text":
@@ -521,6 +528,22 @@ def _build_graph(repos: Repos, storage: StorageBackend, llm: LLMProvider) -> Any
                     dataset_version_id=version_id,
                 )
             }
+
+        # Cleaning creates new versions without profiles — profile them now so the
+        # planner has column metadata (is_likely_metric, is_likely_categorical, etc.)
+        # and can build the correct aggregation spec rather than falling back to a
+        # raw preview.
+        if not repos.profile.list_by_version(version_id):
+            try:
+                _ensure_tables_registered(version_id, version.storage_path, repos, storage)
+                create_profiles(
+                    dataset_id=dataset_id,
+                    dataset_version_id=version_id,
+                    repos=repos,
+                    storage=storage,
+                )
+            except Exception:  # noqa: BLE001
+                pass  # best-effort; planner will fall back to heuristics
 
         dataset = repos.dataset.get(dataset_id)
         if dataset is None:

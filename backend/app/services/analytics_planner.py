@@ -429,12 +429,24 @@ def _apply_llm_hint(
 
     ctx_table = next(t for t in context.tables if t.table_name == table_name)
     valid_cols = {c.column_name for c in ctx_table.columns}
+    # Case-insensitive fallback: LLM sometimes lowercases column names.
+    _lower_to_orig = {c.column_name.lower(): c.column_name for c in ctx_table.columns}
 
     def _valid_col(name: str | None) -> str | None:
-        return name if name and name in valid_cols else None
+        if not name:
+            return None
+        if name in valid_cols:
+            return name
+        return _lower_to_orig.get(name.lower())
 
     def _valid_cols(names: list[str]) -> list[str]:
-        return [n for n in names if n in valid_cols]
+        result: list[str] = []
+        for n in names:
+            if n in valid_cols:
+                result.append(n)
+            elif n.lower() in _lower_to_orig:
+                result.append(_lower_to_orig[n.lower()])
+        return result
 
     try:
         if intent == AnalyticsIntent.visual_result:

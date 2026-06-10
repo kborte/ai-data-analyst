@@ -50,6 +50,14 @@ export interface DataProfile {
   created_at: string;
 }
 
+export interface SavedViewPreview {
+  saved_view_id: string;
+  columns: string[];
+  rows: string[][];
+  preview_row_count: number;
+  total_rows_in_artifact: number | null;
+}
+
 export interface SavedView {
   saved_view_id: string;
   workspace_id: string;

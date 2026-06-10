@@ -353,10 +353,14 @@ def _find_item_column(
     # Deliberately does NOT use _KEYWORD_COL_HINTS — those hints map question keywords
     # to dimensional/partition columns (country→country_code, nation→nationality, etc.)
     # and would incorrectly return e.g. NATIONALITY when the question says "country".
+    # Skip metric columns — "Cleaning Products", "Baby Food" etc. are wide-format
+    # quantity columns whose names happen to contain item hints; they are not
+    # product-name columns and must fall through to the wide-format path.
+    metric_col_names_lower = {c.column_name.lower() for c in table.columns if c.is_likely_metric}
     item_hints = ["product", "item", "sku", "category", "name", "description", "title"]
     for hint in item_hints:
         for lower, orig in all_lower.items():
-            if hint in lower and lower not in exclude_lower:
+            if hint in lower and lower not in exclude_lower and lower not in metric_col_names_lower:
                 return orig
 
     # 2. High-cardinality text column (catches 'Description', 'ProductName', …).

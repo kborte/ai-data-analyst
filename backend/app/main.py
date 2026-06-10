@@ -25,10 +25,10 @@ configure_logging()
 
 _logger = logging.getLogger(__name__)
 
-origins = [
-    "http://localhost:3000",
-    "https://your-frontend.vercel.app",
-]
+import os
+
+_extra = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+origins = ["http://localhost:3000", *_extra]
 
 app = FastAPI(title=settings.APP_NAME, version="0.1.0")
 

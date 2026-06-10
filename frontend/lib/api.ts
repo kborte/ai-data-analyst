@@ -8,6 +8,7 @@ import type {
   DataProfile,
   FeaturePlan,
   SavedView,
+  SavedViewPreview,
   SavedVisual,
   Job,
   WorkflowResponse,
@@ -167,6 +168,25 @@ export async function listViews(
   versionId: string
 ): Promise<SavedView[]> {
   return get(`/datasets/${datasetId}/versions/${versionId}/views`);
+}
+
+export async function previewView(viewId: string): Promise<SavedViewPreview> {
+  return get(`/views/${viewId}/preview`);
+}
+
+export function downloadViewUrl(viewId: string): string {
+  return `${API_BASE}/views/${viewId}/download?format=csv`;
+}
+
+export async function deleteView(viewId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/views/${viewId}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok && res.status !== 204) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`DELETE /views/${viewId} → ${res.status}: ${text}`);
+  }
 }
 
 export async function listVisuals(

@@ -51,6 +51,30 @@ _FILE_KIND_MAP: dict[str, UploadedFileKind] = {
 }
 
 _PREVIEW_LIMIT = 100
+_MIN_DATE_PARSE_RATIO = 0.5
+
+
+def _sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce object columns to types DuckDB can ingest without crashing.
+
+    - Whitespace-only strings → NaN.
+    - String columns where ≥50% of non-null values parse as dates → datetime64.
+      This handles non-ISO formats like MM-DD-YYYY that DuckDB cannot cast.
+    """
+    df = df.copy()
+    for col in df.columns:
+        if df[col].dtype != object:
+            continue
+        # Whitespace-only → NaN
+        df[col] = df[col].replace(r"^\s*$", float("nan"), regex=True)
+        # Try datetime parse; keep only if majority of non-null values succeed
+        non_null = df[col].dropna()
+        if non_null.empty:
+            continue
+        parsed = pd.to_datetime(non_null, errors="coerce")
+        if parsed.notna().sum() / len(non_null) >= _MIN_DATE_PARSE_RATIO:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +86,7 @@ def _dataclasses_from_bytes(
 ) -> list[tuple[str, pd.DataFrame, list[dict[str, Any]]]]:
     """Return [(sanitized_table_name, df, preview_rows), ...] for CSV or Excel."""
     if suffix == ".csv":
-        df = pd.read_csv(io.BytesIO(content))
+        df = _sanitize_df(pd.read_csv(io.BytesIO(content)))
         preview = df.head(_PREVIEW_LIMIT).where(pd.notnull(df), None).to_dict(orient="records")
         return [(stem, df, preview)]
 
@@ -78,6 +102,7 @@ def _dataclasses_from_bytes(
     safe_names = make_unique_table_names([name for name, _ in raw])
     result = []
     for safe_name, (_, df) in zip(safe_names, raw):
+        df = _sanitize_df(df)
         preview = df.head(_PREVIEW_LIMIT).where(pd.notnull(df), None).to_dict(orient="records")
         result.append((safe_name, df, preview))
     return result

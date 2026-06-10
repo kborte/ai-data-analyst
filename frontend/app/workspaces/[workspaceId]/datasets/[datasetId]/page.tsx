@@ -21,6 +21,9 @@ import {
   saveVisualToVisuals,
   uploadFileToDataset,
   pollJob,
+  previewView,
+  downloadViewUrl,
+  deleteView,
 } from "@/lib/api";
 import type {
   AnalyticsOutput,
@@ -34,6 +37,7 @@ import type {
   FeaturePlan,
   NeedsApprovalResponse,
   SavedView,
+  SavedViewPreview,
   SavedVisual,
   TableOutput,
   VisualOutput,
@@ -551,31 +555,154 @@ function VersionsPanel({
   );
 }
 
-function ViewsPanel({ views }: { views: SavedView[] }) {
+function ViewsPanel({ views: initialViews }: { views: SavedView[] }) {
+  const [views, setViews] = useState<SavedView[]>(initialViews);
+
+  function handleDeleted(id: string) {
+    setViews((prev) => prev.filter((v) => v.saved_view_id !== id));
+  }
+
   if (views.length === 0) {
     return <p className="text-sm text-gray-400">No saved views for this copy yet.</p>;
   }
 
   return (
-    <ul className="space-y-2">
+    <ul className="space-y-3">
       {views.map((v) => (
-        <li
-          key={v.saved_view_id}
-          className="bg-white border border-gray-200 rounded-xl px-5 py-4"
-        >
-          <p className="text-sm font-semibold text-gray-800">{v.name}</p>
-          {v.description && (
-            <p className="text-xs text-gray-400 mt-0.5">{v.description}</p>
-          )}
-          <div className="flex gap-4 mt-2 text-xs text-gray-400">
-            {v.row_count != null && <span>{v.row_count.toLocaleString()} rows</span>}
-            {v.column_count != null && <span>{v.column_count} cols</span>}
-            {v.storage_format && <span>{v.storage_format.toUpperCase()}</span>}
-            <span>{new Date(v.created_at).toLocaleDateString()}</span>
-          </div>
-        </li>
+        <ViewCard key={v.saved_view_id} view={v} onDeleted={handleDeleted} />
       ))}
     </ul>
+  );
+}
+
+function ViewCard({ view, onDeleted }: { view: SavedView; onDeleted: (id: string) => void }) {
+  const [preview, setPreview] = useState<SavedViewPreview | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  async function togglePreview() {
+    if (showPreview) {
+      setShowPreview(false);
+      return;
+    }
+    if (preview) {
+      setShowPreview(true);
+      return;
+    }
+    setLoadingPreview(true);
+    setPreviewError(null);
+    try {
+      const data = await previewView(view.saved_view_id);
+      setPreview(data);
+      setShowPreview(true);
+    } catch (e) {
+      setPreviewError(String(e));
+    } finally {
+      setLoadingPreview(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!confirm(`Delete "${view.name}"?`)) return;
+    setDeleting(true);
+    try {
+      await deleteView(view.saved_view_id);
+      onDeleted(view.saved_view_id);
+    } catch (e) {
+      alert(`Delete failed: ${String(e)}`);
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <li className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-5 py-4 flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-gray-800 truncate">{view.name}</p>
+          {view.description && (
+            <p className="text-xs text-gray-400 mt-0.5">{view.description}</p>
+          )}
+          <div className="flex gap-4 mt-1.5 text-xs text-gray-400 flex-wrap">
+            {view.row_count != null && <span>{view.row_count.toLocaleString()} rows</span>}
+            {view.column_count != null && <span>{view.column_count} cols</span>}
+            <span>{new Date(view.created_at).toLocaleDateString()}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={togglePreview}
+            disabled={loadingPreview}
+            className="text-xs font-medium text-blue-600 hover:text-blue-800 disabled:opacity-40 px-2.5 py-1.5 rounded-lg border border-blue-200 hover:bg-blue-50 transition-colors"
+          >
+            {loadingPreview ? "Loading…" : showPreview ? "Hide" : "Preview"}
+          </button>
+          {view.storage_path && (
+            <a
+              href={downloadViewUrl(view.saved_view_id)}
+              download
+              className="text-xs font-medium text-gray-600 hover:text-gray-800 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
+            >
+              Download CSV
+            </a>
+          )}
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="text-xs font-medium text-red-400 hover:text-red-600 disabled:opacity-40 px-2.5 py-1.5 rounded-lg border border-transparent hover:border-red-200 transition-colors"
+          >
+            {deleting ? "…" : "Delete"}
+          </button>
+        </div>
+      </div>
+
+      {previewError && (
+        <p className="text-xs text-red-500 px-5 pb-3">{previewError}</p>
+      )}
+
+      {showPreview && preview && (
+        <div className="border-t border-gray-100">
+          {preview.columns.length === 0 ? (
+            <p className="text-xs text-gray-400 px-5 py-3">No data stored for this view.</p>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100 text-gray-500">
+                      {preview.columns.map((c) => (
+                        <th key={c} className="text-left px-4 py-2 font-medium whitespace-nowrap">{c}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.rows.map((row, i) => (
+                      <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
+                        {row.map((cell, j) => (
+                          <td key={j} className="px-4 py-2 text-gray-700 whitespace-nowrap">
+                            {cell === "" || cell == null
+                              ? <span className="text-gray-300">—</span>
+                              : cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {preview.total_rows_in_artifact != null &&
+                preview.total_rows_in_artifact > preview.preview_row_count && (
+                <p className="text-xs text-gray-400 px-5 py-2">
+                  Showing {preview.preview_row_count} of {preview.total_rows_in_artifact.toLocaleString()} rows.
+                  Download CSV for the full dataset.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 

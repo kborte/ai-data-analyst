@@ -349,17 +349,11 @@ def _find_item_column(
     all_lower = {c.column_name.lower(): c.column_name for c in table.columns}
     exclude_lower = {e.lower() for e in exclude}
 
-    # 1. Keyword hint match in column names (product/item/sku/category/name/description)
+    # 1. Item-specific name scan: column names that semantically mean "what is it".
+    # Deliberately does NOT use _KEYWORD_COL_HINTS — those hints map question keywords
+    # to dimensional/partition columns (country→country_code, nation→nationality, etc.)
+    # and would incorrectly return e.g. NATIONALITY when the question says "country".
     item_hints = ["product", "item", "sku", "category", "name", "description", "title"]
-    for kw_set, col_hints in _KEYWORD_COL_HINTS:
-        if not (kw_set & q_words):
-            continue
-        for hint in col_hints:
-            for lower, orig in all_lower.items():
-                if hint in lower and lower not in exclude_lower:
-                    return orig
-
-    # Direct column-name scan regardless of question keywords.
     for hint in item_hints:
         for lower, orig in all_lower.items():
             if hint in lower and lower not in exclude_lower:

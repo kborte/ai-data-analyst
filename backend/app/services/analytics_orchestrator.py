@@ -309,14 +309,9 @@ def _build_graph(repos: Repos, storage: StorageBackend, llm: LLMProvider) -> Any
     def _route_after_profile_and_plan(state: WorkflowGraphState) -> str:
         if state.get("response"):
             return END
-        # Only pause for cleaning approval when the user explicitly asked to clean.
-        # Analysis/visual requests skip the approval step and proceed to analyze.
-        if (
-            state.get("cleaning_approval_items")
-            and state["workflow_intent"] == WorkflowIntent.clean
-        ):
+        if state.get("cleaning_approval_items"):
             return "pause_cleaning"
-        # Route by intent (cleaning issues exist but user asked to analyze — skip them).
+        # No cleaning issues: route by intent.
         if state["workflow_intent"] == WorkflowIntent.clean:
             return "cleaning_result"
         return "analyze"

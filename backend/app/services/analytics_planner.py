@@ -335,19 +335,21 @@ def _find_item_column(
     table: "DatasetContextTable",
     exclude: list[str],
 ) -> str | None:
-    """Return the column that represents the 'item' being ranked within each group.
+    """Return the long-format 'item name' column (e.g. Description, ProductName).
 
     Priority:
-    1. Column whose name matches product/item/sku/category keyword hints.
-    2. Highest-cardinality non-ID, non-metric, non-date column not in exclude —
-       handles 'Description' / 'ProductName' columns that profiling doesn't mark
-       as categorical because of their high unique count.
+    1. Column whose name contains a product/item/sku/category hint.
+    2. Highest-cardinality non-ID, non-metric, non-date column with enough
+       unique values to be a product-name column (>= 10 distinct values).
+       Low-cardinality columns like Gender (2 values) are not product columns.
+
+    Returns None when the table is likely wide-format (products-as-columns).
     """
     q_words = _words(question)
     all_lower = {c.column_name.lower(): c.column_name for c in table.columns}
     exclude_lower = {e.lower() for e in exclude}
 
-    # 1. Keyword hint match (product/item/sku/category/name/description)
+    # 1. Keyword hint match in column names (product/item/sku/category/name/description)
     item_hints = ["product", "item", "sku", "category", "name", "description", "title"]
     for kw_set, col_hints in _KEYWORD_COL_HINTS:
         if not (kw_set & q_words):
@@ -357,20 +359,23 @@ def _find_item_column(
                 if hint in lower and lower not in exclude_lower:
                     return orig
 
-    # Also scan directly for item_hints in column names regardless of question keywords.
+    # Direct column-name scan regardless of question keywords.
     for hint in item_hints:
         for lower, orig in all_lower.items():
             if hint in lower and lower not in exclude_lower:
                 return orig
 
-    # 2. Highest-cardinality candidate (catches 'Description', 'ProductName', etc.)
+    # 2. High-cardinality text column (catches 'Description', 'ProductName', …).
+    # Require >= 10 unique values so low-cardinality demographics (Gender, Status)
+    # don't get mistaken for product columns — those signal wide-format data instead.
+    _MIN_ITEM_CARDINALITY = 10
     candidates = [
         c for c in table.columns
         if not c.is_likely_id
         and not c.is_likely_metric
         and not c.is_likely_date
         and c.column_name.lower() not in exclude_lower
-        and c.unique_count is not None
+        and (c.unique_count or 0) >= _MIN_ITEM_CARDINALITY
     ]
     if candidates:
         return max(candidates, key=lambda c: c.unique_count or 0).column_name
@@ -378,8 +383,43 @@ def _find_item_column(
     return None
 
 
+# Metric column name fragments that indicate a financial/quantity metric,
+# NOT a product category column in wide-format data.
+_NON_PRODUCT_METRIC_HINTS = frozenset([
+    "revenue", "sales", "amount", "price", "cost", "profit", "margin",
+    "quantity", "qty", "total", "count", "sum", "score", "rate",
+    "percent", "pct", "ratio", "value", "fee", "tax", "discount",
+    "subtotal", "balance", "weight", "age", "lat", "lon",
+    "longitude", "latitude", "altitude",
+])
+
+
+def _wide_format_product_cols(
+    table: "DatasetContextTable",
+    exclude: list[str],
+) -> list[str]:
+    """Return metric columns that represent product categories in wide-format data.
+
+    Wide-format tables encode products as columns (Baby_Food=1, Spices=0, …).
+    These columns are numeric (is_likely_metric) but their names are product
+    category names, not financial metrics like revenue or price.
+    """
+    exclude_lower = {e.lower() for e in exclude}
+    product_cols: list[str] = []
+    for c in table.columns:
+        if not c.is_likely_metric:
+            continue
+        col_lower = c.column_name.lower().replace(" ", "_")
+        if col_lower in exclude_lower:
+            continue
+        if any(hint in col_lower for hint in _NON_PRODUCT_METRIC_HINTS):
+            continue
+        product_cols.append(c.column_name)
+    return product_cols
+
+
 def _build_top_n_sql(table_name: str, partition_col: str, item_col: str, top_n: int = 1) -> str:
-    """Build a CTE + window-function SQL for top-N items per partition."""
+    """CTE + window SQL for top-N per partition (long-format: item names are in one column)."""
     return (
         f'WITH freq AS (\n'
         f'  SELECT "{partition_col}", "{item_col}", COUNT(*) AS purchase_frequency\n'
@@ -397,6 +437,47 @@ def _build_top_n_sql(table_name: str, partition_col: str, item_col: str, top_n: 
         f'FROM ranked\n'
         f'WHERE _rn <= {top_n}\n'
         f'ORDER BY purchase_frequency DESC'
+    )
+
+
+def _build_wide_format_top_n_sql(
+    table_name: str,
+    partition_col: str,
+    product_cols: list[str],
+    top_n: int = 1,
+) -> str:
+    """UNION-based manual unpivot for top-N per partition (wide-format: products are columns).
+
+    Converts each product column into (partition_col, product_name, purchase_count) rows,
+    sums purchases per (partition, product), then picks the top-N per partition.
+    """
+    union_parts = "\n  UNION ALL\n  ".join(
+        f"SELECT \"{partition_col}\", '{col}' AS product_name, \"{col}\" AS purchase_count "
+        f"FROM \"{table_name}\""
+        for col in product_cols
+    )
+    return (
+        f"WITH unpivoted AS (\n"
+        f"  {union_parts}\n"
+        f"),\n"
+        f"aggregated AS (\n"
+        f"  SELECT \"{partition_col}\", product_name,\n"
+        f"         SUM(purchase_count) AS purchase_frequency\n"
+        f"  FROM unpivoted\n"
+        f"  WHERE purchase_count > 0\n"
+        f"  GROUP BY \"{partition_col}\", product_name\n"
+        f"),\n"
+        f"ranked AS (\n"
+        f"  SELECT *,\n"
+        f"    ROW_NUMBER() OVER (\n"
+        f"      PARTITION BY \"{partition_col}\" ORDER BY purchase_frequency DESC\n"
+        f"    ) AS _rn\n"
+        f"  FROM aggregated\n"
+        f")\n"
+        f"SELECT \"{partition_col}\", product_name, purchase_frequency\n"
+        f"FROM ranked\n"
+        f"WHERE _rn <= {top_n}\n"
+        f"ORDER BY purchase_frequency DESC"
     )
 
 
@@ -484,10 +565,22 @@ def _build_rule_based_spec(
                 partition_col = partition_cols[0]
                 item_col = _find_item_column(question, table, exclude=partition_cols)
                 if item_col:
+                    # Long format: one column holds the item/product names
                     sql = _build_top_n_sql(table.table_name, partition_col, item_col)
                     logger.info(
-                        "[planner] top-n-per-group: partition=%s item=%s table=%s",
+                        "[planner] top-n long-format: partition=%s item=%s table=%s",
                         partition_col, item_col, table.table_name,
+                    )
+                    return SqlQuerySpec(sql=sql, table_name=table.table_name)
+                # Wide format: products ARE the metric columns (Baby_Food, Spices, …)
+                product_cols = _wide_format_product_cols(table, exclude=partition_cols)
+                if product_cols:
+                    sql = _build_wide_format_top_n_sql(
+                        table.table_name, partition_col, product_cols
+                    )
+                    logger.info(
+                        "[planner] top-n wide-format: partition=%s products=%s table=%s",
+                        partition_col, product_cols, table.table_name,
                     )
                     return SqlQuerySpec(sql=sql, table_name=table.table_name)
 

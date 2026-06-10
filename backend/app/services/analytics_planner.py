@@ -563,7 +563,11 @@ def _build_rule_based_spec(
             partition_cols = _question_hinted_groupby(question, table, default_gb)
             if partition_cols:
                 partition_col = partition_cols[0]
-                item_col = _find_item_column(question, table, exclude=partition_cols)
+                # Exclude only the partition column (not all matched cols) so that
+                # the item/product column isn't pre-excluded before _find_item_column
+                # can identify it. E.g. "for each country, the most popular product":
+                # partition_cols = ['country', 'product'] but item = 'product'.
+                item_col = _find_item_column(question, table, exclude=[partition_col])
                 if item_col:
                     # Long format: one column holds the item/product names
                     sql = _build_top_n_sql(table.table_name, partition_col, item_col)
@@ -573,7 +577,7 @@ def _build_rule_based_spec(
                     )
                     return SqlQuerySpec(sql=sql, table_name=table.table_name)
                 # Wide format: products ARE the metric columns (Baby_Food, Spices, …)
-                product_cols = _wide_format_product_cols(table, exclude=partition_cols)
+                product_cols = _wide_format_product_cols(table, exclude=[partition_col])
                 if product_cols:
                     sql = _build_wide_format_top_n_sql(
                         table.table_name, partition_col, product_cols

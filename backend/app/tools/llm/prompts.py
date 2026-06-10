@@ -105,7 +105,16 @@ def feature_suggest_prompt(profile: DataProfile, existing_names: list[str]) -> s
         if c.is_likely_categorical:
             roles.append("categorical")
         role_str = "/".join(roles) if roles else "other"
-        col_lines.append(f"  {c.column_name} ({c.data_type}, {role_str})")
+        extras: list[str] = []
+        if c.unique_count is not None:
+            extras.append(f"{c.unique_count} distinct")
+        if c.null_percent is not None and c.null_percent > 0:
+            extras.append(f"{c.null_percent:.1f}% null")
+        if c.top_values:
+            sample = ", ".join(str(v) for v in c.top_values[:3])
+            extras.append(f"sample=[{sample}]")
+        extra_str = f"  [{'; '.join(extras)}]" if extras else ""
+        col_lines.append(f"  {c.column_name} ({c.data_type}, {role_str}){extra_str}")
 
     already = ", ".join(existing_names) if existing_names else "none"
     return (
@@ -282,7 +291,18 @@ def analytics_planner_prompt(question: str, context: DatasetContext) -> str:
             if c.is_likely_id:
                 roles.append("id")
             role_str = "/".join(roles) if roles else "other"
-            col_parts.append(f"    {c.column_name} ({c.data_type}, {role_str})")
+            # Append profile statistics so the LLM can make correct assumptions
+            # without guessing from column names alone.
+            extras: list[str] = []
+            if c.unique_count is not None:
+                extras.append(f"{c.unique_count} distinct")
+            if c.null_percent is not None and c.null_percent > 0:
+                extras.append(f"{c.null_percent:.1f}% null")
+            if c.top_values:
+                sample = ", ".join(str(v) for v in c.top_values[:5])
+                extras.append(f"sample=[{sample}]")
+            extra_str = f"  [{'; '.join(extras)}]" if extras else ""
+            col_parts.append(f"    {c.column_name} ({c.data_type}, {role_str}){extra_str}")
         rows_info = f"{t.row_count} rows" if t.row_count is not None else "unknown rows"
         table_lines.append(f"  Table: {t.table_name} ({rows_info})\n" + "\n".join(col_parts))
 

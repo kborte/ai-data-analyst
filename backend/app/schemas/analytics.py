@@ -1,7 +1,9 @@
 """M12A: Analytics planner schemas and plan contracts.
 
-No SQL fields exist anywhere in this module — the planner emits structured
-specs only; deterministic tools build and execute queries internally.
+Simple specs (preview, aggregate, filter, join) use deterministic tools.
+SqlQuerySpec lets the LLM emit a validated read-only SELECT for patterns
+(top-N per group, window functions, CTEs, subqueries) that can't be
+expressed with a flat AggregateTableSpec.
 """
 
 from __future__ import annotations
@@ -133,6 +135,18 @@ class GenerateVisualSpec(BaseModel):
     aggregation: AllowedAggregation | None = None
 
 
+class SqlQuerySpec(BaseModel):
+    """LLM-generated, validated read-only SELECT query.
+
+    Used for patterns that can't be expressed with AggregateTableSpec:
+    top-N per group, window functions, CTEs, multi-step subqueries.
+    The query is validated (SELECT/WITH only, no DDL/DML) before execution.
+    """
+    tool_name: Literal["sql_query"] = "sql_query"
+    sql: str
+    table_name: str = ""  # primary table hint, used for title inference only
+
+
 class SaveTableResultSpec(BaseModel):
     tool_name: Literal["save_table_result"] = "save_table_result"
     output_id: UUID
@@ -154,6 +168,7 @@ ToolSpec = Annotated[
         FilterTableSpec,
         SimpleJoinSpec,
         GenerateVisualSpec,
+        SqlQuerySpec,
         SaveTableResultSpec,
         SaveVisualResultSpec,
     ],

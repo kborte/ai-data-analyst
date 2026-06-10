@@ -10,11 +10,13 @@ Each tool:
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import duckdb
 import numpy as np
 import pandas as pd
 
@@ -26,6 +28,7 @@ from app.schemas.analytics import (
     PreviewTableSpec,
     AggregateTableSpec,
     SimpleJoinSpec,
+    SqlQuerySpec,
     TableOutput,
     VisualOutput,
 )
@@ -54,6 +57,14 @@ _AGG_PANDAS: dict[AllowedAggregation, str] = {
 }
 
 _SUPPORTED_CHART_TYPES = {ct.value for ct in ChartType}
+
+# Keywords that must not appear in LLM-generated SQL (word-boundary match).
+_FORBIDDEN_SQL = re.compile(
+    r"\b(DROP|DELETE|INSERT|UPDATE|CREATE|ALTER|TRUNCATE|EXEC|EXECUTE|"
+    r"PRAGMA|ATTACH|DETACH|COPY|EXPORT|IMPORT|VACUUM|CALL|"
+    r"BEGIN|COMMIT|ROLLBACK)\b",
+    re.IGNORECASE,
+)
 
 
 class AnalyticsToolError(Exception):
@@ -264,6 +275,54 @@ def run_simple_join(
     )
 
 
+def run_sql_query(
+    *,
+    db_path: Path,
+    spec: SqlQuerySpec,
+    dataset_version_id: UUID,
+    title: str = "",
+    workspace_id: UUID | None = None,
+    dataset_id: UUID | None = None,
+    storage: Any = None,
+) -> TableOutput:
+    """Execute a validated read-only SELECT query and return a TableOutput.
+
+    Safety:
+    - Must start with SELECT or WITH (case-insensitive, leading whitespace stripped).
+    - No forbidden DML/DDL keywords (word-boundary match).
+    - DuckDB connection is opened read_only=True.
+    """
+    sql = spec.sql.strip()
+    upper = sql.upper().lstrip()
+    if not (upper.startswith("SELECT") or upper.startswith("WITH")):
+        raise AnalyticsToolError(
+            "Only SELECT or WITH...SELECT queries are allowed. "
+            f"Received: {sql[:80]}"
+        )
+    if _FORBIDDEN_SQL.search(sql):
+        raise AnalyticsToolError(
+            "Query contains a forbidden SQL keyword (no DML/DDL allowed)."
+        )
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        result_df = con.execute(sql).df()
+    except Exception as exc:  # noqa: BLE001
+        raise AnalyticsToolError(f"Query execution failed: {exc}") from exc
+    finally:
+        con.close()
+
+    return _to_table_output(
+        result_df,
+        dataset_version_id=dataset_version_id,
+        title=title or (f"Analysis: {spec.table_name}" if spec.table_name else "Query result"),
+        source_spec_json=spec.model_dump(),
+        workspace_id=workspace_id,
+        dataset_id=dataset_id,
+        storage=storage,
+    )
+
+
 def run_generate_visual(
     *,
     db_path: Path,
@@ -326,7 +385,6 @@ def _load_validated_table(db_path: Path, table_name: str) -> pd.DataFrame:
 
 
 def _load_table_df(db_path: Path, table_name: str) -> pd.DataFrame:
-    import duckdb
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         return con.execute(f'SELECT * FROM "{table_name}"').df()  # noqa: S608

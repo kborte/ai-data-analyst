@@ -192,6 +192,18 @@ ANALYTICS_PLANNER_SCHEMA: dict[str, Any] = {
                 "mixed_result", "save_table_result", "save_visual_result", "unsupported",
             ],
         },
+        # ── SQL path (preferred for table/mixed intents) ──────────────────
+        "sql": {
+            "type": "string",
+            "description": (
+                "A complete, read-only SELECT or WITH...SELECT query. "
+                "Use this for any table/mixed intent — especially for complex patterns "
+                "such as top-N per group, window functions, CTEs, subqueries, or multi-table joins. "
+                "Use only table and column names listed in the schema above. "
+                "Leave empty only for visual/text/save intents."
+            ),
+        },
+        # ── Simple-aggregation fallback (used when sql is absent) ─────────
         "table_name": {"type": "string"},
         "group_by": {"type": "array", "items": {"type": "string"}},
         "metric_column": {"type": "string"},
@@ -201,6 +213,7 @@ ANALYTICS_PLANNER_SCHEMA: dict[str, Any] = {
         },
         "filter_column": {"type": "string"},
         "filter_value": {},
+        # ── Visual intent ─────────────────────────────────────────────────
         "x_column": {"type": "string"},
         "y_column": {"type": "string"},
         "chart_type": {
@@ -210,7 +223,7 @@ ANALYTICS_PLANNER_SCHEMA: dict[str, Any] = {
         "suggested_title": {"type": "string"},
         "reasoning_summary": {"type": "string"},
     },
-    "required": ["intent", "table_name", "suggested_title", "reasoning_summary"],
+    "required": ["intent", "suggested_title", "reasoning_summary"],
 }
 
 
@@ -279,8 +292,13 @@ def analytics_planner_prompt(question: str, context: DatasetContext) -> str:
         f"Dataset: {context.dataset_name}\n"
         f"Tables:\n{tables_block}\n\n"
         f"User question: {question}\n\n"
-        "Classify the question and select the best analytics tool. "
-        "Use only table names and column names listed above. "
-        "Do not produce SQL. "
-        "If the question cannot be answered with the available tables/columns, set intent to 'unsupported'."
+        "Classify the question and write a read-only SQL SELECT query to answer it.\n"
+        "Rules:\n"
+        "- Use only table names and column names listed above.\n"
+        "- For table_result or mixed_result intents, always populate the `sql` field with a complete query.\n"
+        "- Use CTEs (WITH ...), window functions, and subqueries freely for complex patterns "
+        "(top-N per group, rankings, multi-step aggregations, etc.).\n"
+        "- The query must start with SELECT or WITH and must not contain any DDL or DML keywords.\n"
+        "- For visual_result or text_answer intents, leave `sql` empty and fill the visual/aggregation fields.\n"
+        "- If the question cannot be answered with the available data, set intent to 'unsupported'."
     )

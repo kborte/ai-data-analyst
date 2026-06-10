@@ -32,6 +32,7 @@ from app.schemas.analytics import (
     RecentMessage,
     SaveTableResultSpec,
     SaveVisualResultSpec,
+    SqlQuerySpec,
     TableOutput,
     TextOutput,
     VisualOutput,
@@ -44,6 +45,7 @@ from app.tools.analytics.query_tools import (
     run_generate_visual,
     run_preview_table,
     run_simple_join,
+    run_sql_query,
 )
 from app.tools.llm.prompts import (
     ANALYTICS_PLANNER_SCHEMA,
@@ -418,9 +420,23 @@ def _apply_llm_hint(
     intent: AnalyticsIntent,
     context: DatasetContext,
 ) -> Any | None:
-    """Build a validated ToolSpec from the LLM's raw response, or return None."""
+    """Build a validated ToolSpec from the LLM's raw response, or return None.
+
+    Preference order for table/mixed intents:
+      1. LLM-provided SQL → SqlQuerySpec  (handles any complexity)
+      2. LLM column hints → AggregateTableSpec / GenerateVisualSpec
+      3. Return None → caller uses rule-based fallback
+    """
     if not llm_raw:
         return None
+
+    # ── SQL path: preferred for all table/mixed intents ───────────────────
+    sql = (llm_raw.get("sql") or "").strip()
+    if sql and intent in (AnalyticsIntent.table_result, AnalyticsIntent.mixed_result):
+        upper = sql.upper().lstrip()
+        if upper.startswith("SELECT") or upper.startswith("WITH"):
+            hint_table = llm_raw.get("table_name", "")
+            return SqlQuerySpec(sql=sql, table_name=hint_table)
 
     table_name = llm_raw.get("table_name", "")
     valid_tables = {t.table_name for t in context.tables}
@@ -610,6 +626,8 @@ class AnalyticsPlanner:
                     return run_filter_table(spec=spec, **common)
                 case "simple_join":
                     return run_simple_join(spec=spec, **common)
+                case "sql_query":
+                    return run_sql_query(spec=spec, **common)
                 case "generate_visual":
                     return run_generate_visual(
                         db_path=db_path,

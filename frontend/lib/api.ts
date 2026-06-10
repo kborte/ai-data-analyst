@@ -10,6 +10,7 @@ import type {
   SavedView,
   SavedVisual,
   Job,
+  WorkflowResponse,
 } from "./types";
 
 export interface ApiUser {
@@ -204,6 +205,25 @@ export async function analyticsAsk(
   return post(
     `/datasets/${datasetId}/versions/${versionId}/analytics/ask`,
     { question, recent_messages: [], prior_output_refs: [] }
+  );
+}
+
+export async function analyticsWorkflow(
+  datasetId: string,
+  versionId: string,
+  question: string,
+  workflowState?: unknown,
+  cleaningDecisions?: unknown[],
+  featureDecisions?: unknown[]
+): Promise<WorkflowResponse> {
+  return post(
+    `/datasets/${datasetId}/versions/${versionId}/analytics/workflow`,
+    {
+      question,
+      workflow_state: workflowState ?? null,
+      cleaning_decisions: cleaningDecisions ?? [],
+      feature_decisions: featureDecisions ?? [],
+    }
   );
 }
 

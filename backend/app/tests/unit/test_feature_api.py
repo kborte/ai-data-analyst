@@ -1,4 +1,4 @@
-"""API tests for feature engineering routes (M6C)."""
+"""API tests for feature engineering routes (M9+: DuckDB-based)."""
 
 import uuid
 from datetime import UTC, datetime
@@ -8,13 +8,16 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from app.dependencies import Repos, get_repos
+from app.dependencies import Repos, get_repos, get_storage
 from app.main import app
+from app.tools.data.duckdb_service import create_version_duckdb, temp_duckdb_path
+from app.tools.files.storage_service import LocalStorageBackend, version_path
 from app.schemas.common import ArtifactStatus, DatasetVersionType, DataType
 from app.schemas.dataset import DatasetTable, DatasetVersion
 from app.schemas.features import FeaturePlan, FeaturePlanJson
 from app.schemas.profile import ColumnProfile, DataProfile
 
+_WORKSPACE_ID = uuid.uuid4()
 _DATASET_ID = uuid.uuid4()
 _USER_ID = uuid.uuid4()
 
@@ -37,26 +40,30 @@ def _col(name: str, dtype: DataType = DataType.float_, *, is_likely_date: bool =
 
 
 @pytest.fixture()
-def ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.tools.files.storage.settings.LOCAL_STORAGE_DIR", str(tmp_path))
+def ctx(tmp_path: Path):
     fresh = Repos()
+    backend = LocalStorageBackend(str(tmp_path / "storage"))
     app.dependency_overrides[get_repos] = lambda: fresh
+    app.dependency_overrides[get_storage] = lambda: backend
     client = TestClient(app)
-    yield client, fresh, tmp_path
+    yield client, fresh, backend
     app.dependency_overrides.clear()
 
 
-def _seed_version_with_csv(repos: Repos, tmp_path: Path) -> tuple[uuid.UUID, uuid.UUID]:
+def _seed_version_with_duckdb(repos: Repos, storage: LocalStorageBackend) -> uuid.UUID:
     version_id = uuid.uuid4()
-    csv_path = tmp_path / "orders.csv"
     df = pd.DataFrame({"revenue": [100.0, 200.0], "order_count": [2.0, 4.0]})
-    df.to_csv(csv_path, index=False)
+    spath = version_path(_WORKSPACE_ID, _DATASET_ID, 1, "original")
+    with temp_duckdb_path() as tmp_db:
+        create_version_duckdb({"orders": df}, tmp_db)
+        storage.save(spath, tmp_db.read_bytes())
 
     repos.dataset_version.save(DatasetVersion(
         dataset_version_id=version_id,
         dataset_id=_DATASET_ID,
         version_number=1,
         version_type=DatasetVersionType.original,
+        storage_path=spath,
         created_by_user_id=_USER_ID,
         created_at=_now(),
     ))
@@ -64,7 +71,6 @@ def _seed_version_with_csv(repos: Repos, tmp_path: Path) -> tuple[uuid.UUID, uui
         table_id=uuid.uuid4(),
         dataset_version_id=version_id,
         table_name="orders",
-        storage_path=str(csv_path),
     ))
     return version_id
 
@@ -136,8 +142,8 @@ def test_feature_plan_route_creates_plan(ctx):
 
 
 def test_validate_blocks_missing_approval(ctx):
-    client, repos, tmp_path = ctx
-    version_id = _seed_version_with_csv(repos, tmp_path)
+    client, repos, backend = ctx
+    version_id = _seed_version_with_duckdb(repos, backend)
     plan_id, _ = _seed_plan_with_aov(repos, version_id)
 
     resp = client.post(
@@ -157,8 +163,8 @@ def test_validate_blocks_missing_approval(ctx):
 
 
 def test_execute_creates_queued_job(ctx):
-    client, repos, tmp_path = ctx
-    version_id = _seed_version_with_csv(repos, tmp_path)
+    client, repos, backend = ctx
+    version_id = _seed_version_with_duckdb(repos, backend)
     plan_id, feature_id = _seed_plan_with_aov(repos, version_id)
 
     resp = client.post(
@@ -187,8 +193,8 @@ def test_execute_creates_queued_job(ctx):
 def test_worker_creates_feature_result_and_version(ctx):
     from app.worker.runner import run_one
 
-    client, repos, tmp_path = ctx
-    version_id = _seed_version_with_csv(repos, tmp_path)
+    client, repos, backend = ctx
+    version_id = _seed_version_with_duckdb(repos, backend)
     plan_id, feature_id = _seed_plan_with_aov(repos, version_id)
 
     resp = client.post(
@@ -202,7 +208,7 @@ def test_worker_creates_feature_result_and_version(ctx):
         },
     )
     job_id = uuid.UUID(resp.json()["job_id"])
-    run_one(repos.job, repos, storage=None, llm=None)
+    run_one(repos.job, repos, storage=backend, llm=None)
 
     job = repos.job.get(job_id)
     assert job.status == "completed"
@@ -223,10 +229,10 @@ def test_worker_creates_feature_result_and_version(ctx):
 def test_execute_does_not_mutate_previous_version(ctx):
     from app.worker.runner import run_one
 
-    client, repos, tmp_path = ctx
-    version_id = _seed_version_with_csv(repos, tmp_path)
-    csv_path = tmp_path / "orders.csv"
-    original_bytes = csv_path.read_bytes()
+    client, repos, backend = ctx
+    version_id = _seed_version_with_duckdb(repos, backend)
+    original_storage_path = repos.dataset_version.get(version_id).storage_path
+    original_bytes = backend.read(original_storage_path)
     plan_id, feature_id = _seed_plan_with_aov(repos, version_id)
 
     resp = client.post(
@@ -239,7 +245,8 @@ def test_execute_does_not_mutate_previous_version(ctx):
             "decisions": [{"feature_id": str(feature_id), "decision": "approve"}],
         },
     )
-    run_one(repos.job, repos, storage=None, llm=None)
+    run_one(repos.job, repos, storage=backend, llm=None)
 
-    assert csv_path.read_bytes() == original_bytes
+    # Original artifact must not be overwritten.
+    assert backend.read(original_storage_path) == original_bytes
     assert repos.dataset_version.get(version_id) is not None

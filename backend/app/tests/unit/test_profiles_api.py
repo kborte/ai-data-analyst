@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import openpyxl
 import pytest
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.dependencies import Repos, get_repos, get_storage
 from app.main import app
+from app.schemas.workspace import Workspace
 from app.tools.files.storage_service import LocalStorageBackend
 from app.worker.runner import run_one
 
@@ -28,6 +30,12 @@ def storage_dir(tmp_path: Path) -> Path:
 @pytest.fixture()
 def ctx(storage_dir: Path):
     fresh = Repos()
+    fresh.workspace.save(Workspace(
+        workspace_id=UUID(WORKSPACE_ID),
+        name="test workspace",
+        created_by_user_id=uuid4(),
+        created_at=datetime.now(tz=UTC),
+    ))
     backend = LocalStorageBackend(str(storage_dir))
     app.dependency_overrides[get_repos] = lambda: fresh
     app.dependency_overrides[get_storage] = lambda: backend

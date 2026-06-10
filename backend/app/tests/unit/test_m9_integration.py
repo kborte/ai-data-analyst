@@ -8,15 +8,17 @@ M9D integration tests covering gaps not addressed by existing unit tests:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.dependencies import Repos, get_repos, get_storage
 from app.main import app
+from app.schemas.workspace import Workspace
 from app.tools.files.storage_service import (
     LocalStorageBackend,
     StorageBackend,
@@ -92,9 +94,19 @@ def test_get_storage_defaults_to_local_for_unknown_backend(tmp_path: Path) -> No
 # DatasetVersion storage metadata after upload
 # ---------------------------------------------------------------------------
 
+def _seed_workspace(repos: Repos) -> None:
+    repos.workspace.save(Workspace(
+        workspace_id=UUID(WORKSPACE_ID),
+        name="test workspace",
+        created_by_user_id=uuid4(),
+        created_at=datetime.now(tz=UTC),
+    ))
+
+
 @pytest.fixture()
 def local_ctx(tmp_path: Path):
     fresh = Repos()
+    _seed_workspace(fresh)
     backend = LocalStorageBackend(str(tmp_path / "storage"))
     app.dependency_overrides[get_repos] = lambda: fresh
     app.dependency_overrides[get_storage] = lambda: backend
@@ -106,6 +118,7 @@ def local_ctx(tmp_path: Path):
 def fake_ctx(tmp_path: Path):
     """Client + repos + fake in-memory backend — zero disk writes."""
     fresh = Repos()
+    _seed_workspace(fresh)
     fake = FakeStorageBackend()
     app.dependency_overrides[get_repos] = lambda: fresh
     app.dependency_overrides[get_storage] = lambda: fake

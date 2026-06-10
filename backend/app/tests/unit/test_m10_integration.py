@@ -21,6 +21,7 @@ from app.main import app
 from app.repositories.memory import JobRepository
 from app.schemas.common import JobStatus, JobType
 from app.schemas.job import Job
+from app.schemas.workspace import Workspace
 from app.tools.files.storage_service import LocalStorageBackend
 from app.worker.runner import run_one
 
@@ -41,6 +42,12 @@ def storage_dir(tmp_path: Path) -> Path:
 @pytest.fixture()
 def ctx(storage_dir: Path):
     repos = Repos()
+    repos.workspace.save(Workspace(
+        workspace_id=WORKSPACE_ID,
+        name="test workspace",
+        created_by_user_id=uuid4(),
+        created_at=datetime.now(tz=timezone.utc),
+    ))
     backend = LocalStorageBackend(str(storage_dir))
     app.dependency_overrides[get_repos] = lambda: repos
     app.dependency_overrides[get_storage] = lambda: backend

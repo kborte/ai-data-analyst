@@ -267,6 +267,7 @@ AnalyticsOutput = Annotated[
 
 class AnalyticsPlan(BaseModel):
     intent: AnalyticsIntent
+    question: str
     dataset_id: UUID
     dataset_version_id: UUID
     reasoning_summary: str

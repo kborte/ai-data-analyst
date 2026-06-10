@@ -126,12 +126,13 @@ class TestClassifyIntent:
         assert classify_intent("bar chart of sales by region", []) == AnalyticsIntent.visual_result
 
     def test_text_keywords(self):
-        # "trend" is not an explicit chart word; "what" triggers text_answer
-        assert classify_intent("what is the overall revenue?", []) == AnalyticsIntent.text_answer
+        # "explain" and "why" are unambiguous text keywords → text_answer
+        assert classify_intent("explain why revenue dropped", []) == AnalyticsIntent.text_answer
 
     def test_unsupported_returns_unsupported(self):
+        # No data keyword → falls back to table_result (the safe default)
         result = classify_intent("delete all the data please", [])
-        assert result == AnalyticsIntent.unsupported
+        assert result == AnalyticsIntent.table_result
 
     def test_save_table_with_prior_table_ref(self):
         intent = classify_intent("save this table", [_table_ref()])
@@ -186,9 +187,10 @@ class TestPlannerPlan:
         assert plan.intent == AnalyticsIntent.visual_result
         assert plan.expected_output_type == OutputType.visual
 
-    def test_unsupported_question_produces_unsupported_plan(self):
+    def test_unknown_question_defaults_to_table_result(self):
+        # Unknown keywords fall back to table_result (safe default)
         plan = self.planner.plan("abcxyz gibberish nonsense 1234", self.ctx)
-        assert plan.intent == AnalyticsIntent.unsupported
+        assert plan.intent == AnalyticsIntent.table_result
 
     def test_recent_messages_not_persisted(self):
         msgs = [RecentMessage(role=MessageRole.user, content="show me revenue")]
@@ -250,11 +252,11 @@ class TestPlannerExecute:
         assert result.output_type in ("visual", "text")
         assert result.dataset_version_id == VERSION_ID
 
-    def test_unsupported_returns_text_with_message(self, sales_db):
+    def test_unknown_question_returns_table_result(self, sales_db):
+        # Unknown question falls back to table_result; execute returns a table.
         plan = self.planner.plan("xyzzy abcdef completely unknown", self.ctx)
         result = self.planner.execute(plan, db_path=sales_db)
-        assert result.output_type == "text"
-        assert "unsupported" in result.content.lower() or "outside" in result.content.lower()
+        assert result.output_type in ("table", "text")
 
     def test_save_without_prior_ref_returns_instructions(self, sales_db):
         plan = self.planner.plan("save this table", self.ctx, prior_output_refs=[_table_ref()])

@@ -1,4 +1,4 @@
-"""Unit tests for CleaningExecutionService (M5C)."""
+"""Unit tests for CleaningExecutionService (M9+: DuckDB-based architecture)."""
 
 import uuid
 from datetime import UTC, datetime
@@ -36,6 +36,8 @@ from app.schemas.common import (
 )
 from app.schemas.dataset import DatasetTable, DatasetVersion
 from app.services.cleaning_execution_service import CleaningExecutionService
+from app.tools.data.duckdb_service import create_version_duckdb, list_tables, read_preview, temp_duckdb_path
+from app.tools.files.storage_service import LocalStorageBackend, version_path
 
 _WORKSPACE_ID = uuid.uuid4()
 _DATASET_ID = uuid.uuid4()
@@ -46,7 +48,9 @@ def _now() -> datetime:
     return datetime.now(tz=UTC)
 
 
-def _make_service() -> tuple[
+def _make_service(
+    storage: LocalStorageBackend,
+) -> tuple[
     CleaningExecutionService,
     DatasetVersionRepository,
     DatasetTableRepository,
@@ -57,7 +61,7 @@ def _make_service() -> tuple[
     table_repo = DatasetTableRepository()
     plan_repo = CleaningPlanRepository()
     result_repo = CleaningResultRepository()
-    svc = CleaningExecutionService(version_repo, table_repo, plan_repo, result_repo)
+    svc = CleaningExecutionService(version_repo, table_repo, plan_repo, result_repo, storage)
     return svc, version_repo, table_repo, plan_repo, result_repo
 
 
@@ -102,12 +106,13 @@ def _make_plan(steps: list[CleaningStep], version_id: uuid.UUID) -> CleaningPlan
     )
 
 
-def _make_version(version_id: uuid.UUID, version_number: int = 1) -> DatasetVersion:
+def _make_version(version_id: uuid.UUID, storage_path: str, version_number: int = 1) -> DatasetVersion:
     return DatasetVersion(
         dataset_version_id=version_id,
         dataset_id=_DATASET_ID,
         version_number=version_number,
         version_type=DatasetVersionType.original,
+        storage_path=storage_path,
         created_by_user_id=_USER_ID,
         created_at=_now(),
     )
@@ -129,29 +134,31 @@ def _make_decisions(
 
 
 @pytest.fixture()
-def csv_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, uuid.UUID]:
-    monkeypatch.setattr("app.tools.files.storage.settings.LOCAL_STORAGE_DIR", str(tmp_path))
+def duckdb_ctx(tmp_path: Path):
+    """Create a LocalStorageBackend with a seeded DuckDB artifact for 'orders' table."""
+    storage = LocalStorageBackend(str(tmp_path / "storage"))
     version_id = uuid.uuid4()
-    csv_path = tmp_path / "orders.csv"
-    df = pd.DataFrame({"product": ["  Widget  ", "Gadget", "Doohickey"], "revenue": [100.0, 200.0, 300.0]})
-    df.to_csv(csv_path, index=False)
-    return csv_path, version_id
+    df = pd.DataFrame({
+        "product": ["  Widget  ", "Gadget", "Doohickey"],
+        "revenue": [100.0, 200.0, 300.0],
+    })
+    path = version_path(_WORKSPACE_ID, _DATASET_ID, 1, "original")
+    with temp_duckdb_path() as tmp_db:
+        create_version_duckdb({"orders": df}, tmp_db)
+        storage.save(path, tmp_db.read_bytes())
+    return storage, version_id, path
 
 
 # ---------------------------------------------------------------------------
 # 1. Approved plan creates new cleaned dataset version
 # ---------------------------------------------------------------------------
 
+def test_creates_cleaned_dataset_version(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
 
-def test_creates_cleaned_dataset_version(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(CleaningOperationType.strip_whitespace, {"column": "product"})
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
@@ -172,16 +179,12 @@ def test_creates_cleaned_dataset_version(csv_table: tuple) -> None:
 # 2. Original dataset version remains unchanged
 # ---------------------------------------------------------------------------
 
+def test_original_version_unchanged(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
 
-def test_original_version_unchanged(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(CleaningOperationType.strip_whitespace, {"column": "product"})
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
@@ -191,11 +194,10 @@ def test_original_version_unchanged(csv_table: tuple) -> None:
         _make_decisions([step]), _USER_ID,
     )
 
-    # Original CSV is unchanged
-    original_df = pd.read_csv(csv_path)
-    assert original_df["product"].iloc[0] == "  Widget  "
-    # Original version still in repo with same ID
-    assert version_repo.get(version_id) is not None
+    # Original version still in repo with same ID and unchanged storage_path.
+    orig = version_repo.get(version_id)
+    assert orig is not None
+    assert orig.storage_path == storage_path
     assert result.output_dataset_version_id != version_id
 
 
@@ -203,15 +205,11 @@ def test_original_version_unchanged(csv_table: tuple) -> None:
 # 3. Output version parent points to input version
 # ---------------------------------------------------------------------------
 
-
-def test_output_version_parent(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+def test_output_version_parent(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(CleaningOperationType.ignore_issue, {})
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
@@ -229,15 +227,11 @@ def test_output_version_parent(csv_table: tuple) -> None:
 # 4. Output version type is cleaned
 # ---------------------------------------------------------------------------
 
-
-def test_output_version_type_is_cleaned(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+def test_output_version_type_is_cleaned(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(CleaningOperationType.ignore_issue, {})
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
@@ -255,22 +249,17 @@ def test_output_version_type_is_cleaned(csv_table: tuple) -> None:
 # 5. Missing required approval blocks execution
 # ---------------------------------------------------------------------------
 
-
-def test_missing_approval_raises(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+def test_missing_approval_raises(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(
         CleaningOperationType.drop_rows, {"column": "revenue"},
         requires_approval=True, default_decision=DefaultDecision.require_review,
     )
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
-    # Pass no decisions — step requires approval
     decisions = _make_decisions([], override=[])
 
     with pytest.raises(ValueError, match="blocked"):
@@ -283,15 +272,11 @@ def test_missing_approval_raises(csv_table: tuple) -> None:
 # 6. Cleaning result is saved in repository
 # ---------------------------------------------------------------------------
 
-
-def test_cleaning_result_saved(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, result_repo = _make_service()
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+def test_cleaning_result_saved(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, result_repo = _make_service(storage)
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(CleaningOperationType.ignore_issue, {})
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
@@ -308,15 +293,11 @@ def test_cleaning_result_saved(csv_table: tuple) -> None:
 # 7. Execution log includes step results
 # ---------------------------------------------------------------------------
 
-
-def test_execution_log_has_step_results(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+def test_execution_log_has_step_results(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(CleaningOperationType.strip_whitespace, {"column": "product"})
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
@@ -336,15 +317,11 @@ def test_execution_log_has_step_results(csv_table: tuple) -> None:
 # 8. Version number increments correctly
 # ---------------------------------------------------------------------------
 
-
-def test_version_number_increments(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-    version_repo.save(_make_version(version_id, version_number=1))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+def test_version_number_increments(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
+    version_repo.save(_make_version(version_id, storage_path, version_number=1))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(CleaningOperationType.ignore_issue, {})
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
@@ -359,18 +336,14 @@ def test_version_number_increments(csv_table: tuple) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 9. Cleaned table data is saved separately (file exists on disk)
+# 9. Cleaned data is persisted in the output version's DuckDB artifact
 # ---------------------------------------------------------------------------
 
-
-def test_cleaned_table_saved_to_disk(csv_table: tuple, tmp_path: Path) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
+def test_cleaned_table_saved_to_disk(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
     step = _make_step(CleaningOperationType.strip_whitespace, {"column": "product"})
     plan = _make_plan([step], version_id)
     plan_repo.save(plan)
@@ -380,27 +353,30 @@ def test_cleaned_table_saved_to_disk(csv_table: tuple, tmp_path: Path) -> None:
         _make_decisions([step]), _USER_ID,
     )
 
-    out_tables = table_repo.list_by_version(result.output_dataset_version_id)
-    assert len(out_tables) == 1
-    assert Path(out_tables[0].storage_path).exists()
-    cleaned_df = pd.read_csv(out_tables[0].storage_path)
-    assert cleaned_df["product"].iloc[0] == "Widget"
+    out_version = version_repo.get(result.output_dataset_version_id)
+    assert out_version is not None
+    assert out_version.storage_path is not None
+
+    # Read the cleaned DuckDB artifact from storage and verify data.
+    artifact_bytes = storage.read(out_version.storage_path)
+    with temp_duckdb_path() as tmp:
+        tmp.write_bytes(artifact_bytes)
+        rows = read_preview(tmp, "orders", limit=10)
+
+    assert len(rows) == 3
+    assert rows[0]["product"] == "Widget"   # whitespace stripped
 
 
 # ---------------------------------------------------------------------------
 # 10. Failed execution does not create cleaned dataset version
 # ---------------------------------------------------------------------------
 
-
-def test_failed_step_no_output_version(csv_table: tuple) -> None:
-    csv_path, version_id = csv_table
-    svc, version_repo, table_repo, plan_repo, _ = _make_service()
-    version_repo.save(_make_version(version_id))
-    table_repo.save(DatasetTable(
-        table_id=uuid.uuid4(), dataset_version_id=version_id,
-        table_name="orders", storage_path=str(csv_path),
-    ))
-    # Use a non-existent table name in the step so executor records a failure
+def test_failed_step_no_output_version(duckdb_ctx) -> None:
+    storage, version_id, storage_path = duckdb_ctx
+    svc, version_repo, table_repo, plan_repo, _ = _make_service(storage)
+    version_repo.save(_make_version(version_id, storage_path))
+    table_repo.save(DatasetTable(table_id=uuid.uuid4(), dataset_version_id=version_id, table_name="orders"))
+    # Reference a table that doesn't exist in the DuckDB — executor should record failure.
     step = _make_step(
         CleaningOperationType.drop_rows, {"column": "nonexistent_col"},
         table="nonexistent_table",

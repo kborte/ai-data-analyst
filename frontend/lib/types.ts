@@ -217,3 +217,61 @@ export interface FeaturePlan {
   };
   created_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Workflow orchestrator
+// ---------------------------------------------------------------------------
+
+export interface ApprovalItem {
+  id: string;
+  title: string;
+  description: string;
+  recommended_action: string;
+  details: string | null;
+  default_decision: string;
+}
+
+export interface WorkflowState {
+  workspace_id: string | null;
+  dataset_id: string;
+  dataset_version_id: string;
+  question: string;
+  stage: string;
+  intent: string;
+  profile_id: string | null;
+  cleaning_plan_id: string | null;
+  feature_plan_id: string | null;
+  resolved_version_id: string | null;
+}
+
+export interface NeedsApprovalResponse {
+  response_type: "needs_approval";
+  stage: string;
+  message: string;
+  dataset_id: string;
+  dataset_version_id: string;
+  items: ApprovalItem[];
+  workflow_state: WorkflowState;
+}
+
+export interface NeedsClarificationResponse {
+  response_type: "needs_clarification";
+  message: string;
+  dataset_id: string;
+  dataset_version_id: string;
+  options: string[];
+}
+
+export interface AnalysisResultResponse {
+  response_type: "analysis_result";
+  dataset_id: string;
+  dataset_version_id: string;
+  summary_text: string;
+  outputs: AnalyticsOutput[];
+  assumptions_used: string[];
+}
+
+export type WorkflowResponse =
+  | NeedsApprovalResponse
+  | NeedsClarificationResponse
+  | AnalysisResultResponse;

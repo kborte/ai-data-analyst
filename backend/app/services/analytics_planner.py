@@ -71,9 +71,11 @@ _AGGREGATE_WORDS = frozenset([
 _TABLE_WORDS = frozenset([
     "table", "list", "show", "top", "rank", "filter", "where",
     "join", "compare", "pivot", "breakdown",
+    "most", "least", "popular", "best", "worst", "highest", "lowest",
+    "biggest", "smallest", "largest", "frequent", "common", "leading",
 ])
 _TEXT_WORDS = frozenset([
-    "what", "why", "how", "explain", "describe", "tell", "summary",
+    "why", "how", "explain", "describe", "tell", "summary",
     "insight", "analyze", "analyse", "define", "overview",
 ])
 _SAVE_WORDS = frozenset(["save", "keep", "store", "bookmark"])
@@ -138,7 +140,8 @@ def classify_intent(
     if text_score >= 1:
         return AnalyticsIntent.text_answer
 
-    return AnalyticsIntent.unsupported
+    # Default to a table result — most unanswered questions in a data app want data.
+    return AnalyticsIntent.table_result
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +160,73 @@ def _intent_to_output_type(intent: AnalyticsIntent) -> OutputType:
             return OutputType.text
 
 
-def _first_table(context: DatasetContext) -> DatasetContextTable | None:
+_COUNT_WORDS = frozenset([
+    "popular", "frequent", "common", "count", "times", "often", "top",
+])
+# Words that signal "give me the highest value" — use max aggregation
+_MAX_WORDS = frozenset(["maximum", "biggest", "largest", "most"])
+_MIN_WORDS = frozenset(["minimum", "smallest", "least"])
+_AVG_WORDS = frozenset(["average", "avg", "mean"])
+
+
+def _detect_aggregation(question: str) -> "AllowedAggregation":
+    """Choose the aggregation function based on question keywords."""
+    w = _words(question)
+    if w & _COUNT_WORDS:
+        return AllowedAggregation.count
+    if w & _AVG_WORDS:
+        return AllowedAggregation.avg
+    if w & _MIN_WORDS:
+        return AllowedAggregation.min
+    if w & _MAX_WORDS:
+        return AllowedAggregation.max
+    return AllowedAggregation.sum
+
+
+# Table name keywords that suggest a primary analytical table over a lookup table.
+_ANALYTICAL_TABLE_WORDS = frozenset([
+    "sales", "orders", "transactions", "revenue", "customers", "products",
+    "events", "sessions", "leads", "bookings", "payments",
+])
+# Table name keywords that suggest a lookup/reference table (lower priority).
+_LOOKUP_TABLE_WORDS = frozenset([
+    "codes", "lookup", "reference", "mapping", "dim", "meta",
+])
+
+
+def _best_table_for_question(question: str, context: DatasetContext) -> "DatasetContextTable | None":
+    """Return the table whose columns (or name) best match the question's domain keywords."""
+    if not context.tables:
+        return None
+    q_words = _words(question)
+
+    def _score(table: "DatasetContextTable") -> tuple[int, int]:
+        col_names_lower = {c.column_name.lower() for c in table.columns}
+        tname_lower = table.table_name.lower()
+        keyword_hits = 0
+
+        # Score by column name matches (works when profile exists)
+        for kw_set, col_hints in _KEYWORD_COL_HINTS:
+            if kw_set & q_words:
+                for hint in col_hints:
+                    if any(hint in cn for cn in col_names_lower):
+                        keyword_hits += 1
+
+        # Score by table name (works even without a profile)
+        for word in _ANALYTICAL_TABLE_WORDS:
+            if word in tname_lower:
+                keyword_hits += 2
+        for word in _LOOKUP_TABLE_WORDS:
+            if word in tname_lower:
+                keyword_hits -= 2
+
+        has_metrics = int(any(c.is_likely_metric for c in table.columns))
+        return (keyword_hits + has_metrics, table.row_count or 0)
+
+    return max(context.tables, key=_score)
+
+
+def _first_table(context: DatasetContext) -> "DatasetContextTable | None":
     return context.tables[0] if context.tables else None
 
 
@@ -282,8 +351,6 @@ def _build_rule_based_spec(
     prior_refs: list[PriorOutputRef],
 ) -> Any:
     """Return a ToolSpec for the given intent using rule-based heuristics."""
-    table = _first_table(context)
-
     if intent in (AnalyticsIntent.save_table_result, AnalyticsIntent.save_visual_result):
         ref = next(
             (r for r in prior_refs if r.output_type in (OutputType.table, OutputType.visual)),
@@ -294,16 +361,20 @@ def _build_rule_based_spec(
             return SaveTableResultSpec(output_id=ref_id, name="Saved view")
         return SaveVisualResultSpec(output_id=ref_id, title="Saved visual")
 
+    # Pick the table most relevant to the question, not just the first one.
+    table = _best_table_for_question(question, context) or _first_table(context)
+
     if table is None:
         return PreviewTableSpec(table_name="unknown")
 
     if intent == AnalyticsIntent.visual_result:
-        gb = _groupby_cols(table)
-        metrics = _metric_cols(table)
+        visual_table = _best_table_for_question(question, context) or table
+        gb = _groupby_cols(visual_table)
+        metrics = _metric_cols(visual_table)
         return GenerateVisualSpec(
-            table_name=table.table_name,
+            table_name=visual_table.table_name,
             chart_type=_chart_type_from_question(question),
-            x_column=gb[0] if gb else table.columns[0].column_name,
+            x_column=gb[0] if gb else visual_table.columns[0].column_name,
             y_column=metrics[0] if metrics else None,
         )
 
@@ -311,13 +382,24 @@ def _build_rule_based_spec(
         default_gb = _groupby_cols(table)
         gb = _question_hinted_groupby(question, table, default_gb)
         metrics = _metric_cols(table)
-        if gb and metrics:
+        agg = _detect_aggregation(question)
+
+        # For count aggregation use a non-null categorical col (the group-by col itself works).
+        if agg == AllowedAggregation.count:
+            metric_col = gb[0] if gb else (metrics[0] if metrics else None)
+        else:
+            metric_col = metrics[0] if metrics else None
+
+        if gb and metric_col:
             period = _detect_temporal_period(question)
+            # The aggregated result column is named "{agg}_{metric_col}" by run_aggregate_table.
+            agg_col_name = f"{agg}_{metric_col}"
+            sort_by = gb[0] if period else agg_col_name
             return AggregateTableSpec(
                 table_name=table.table_name,
                 group_by=gb,
-                metrics=[MetricSpec(column=metrics[0], aggregation=AllowedAggregation.sum)],
-                sort_by=gb[0] if period else metrics[0],
+                metrics=[MetricSpec(column=metric_col, aggregation=agg)],
+                sort_by=sort_by,
                 sort_desc=False if period else True,
                 date_trunc_period=period,
             )
@@ -376,11 +458,17 @@ def _apply_llm_hint(
                 agg = AllowedAggregation(agg_raw)
             except ValueError:
                 agg = AllowedAggregation.sum
+            # For count, use the group-by column as the metric if no metric provided.
+            if not metric and agg == AllowedAggregation.count and gb:
+                metric = gb[0]
             if gb and metric:
+                agg_col_name = f"{agg}_{metric}"
                 return AggregateTableSpec(
                     table_name=table_name,
                     group_by=gb,
                     metrics=[MetricSpec(column=metric, aggregation=agg)],
+                    sort_by=agg_col_name,
+                    sort_desc=True,
                 )
             # LLM couldn't provide useful columns — let rule-based spec stand.
             return None

@@ -402,6 +402,10 @@ class WorkspaceRepository:
         self._store[ws.workspace_id] = ws
         return ws
 
+    def save(self, ws: Workspace) -> Workspace:
+        self._store[ws.workspace_id] = ws
+        return ws
+
     def get(self, workspace_id: UUID) -> Workspace | None:
         return self._store.get(workspace_id)
 

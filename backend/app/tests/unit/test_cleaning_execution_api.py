@@ -1,4 +1,4 @@
-"""API tests for cleaning execution routes (M5D)."""
+"""API tests for cleaning execution routes (M9+: DuckDB-based)."""
 
 import uuid
 from datetime import UTC, datetime
@@ -8,8 +8,10 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from app.dependencies import Repos, get_repos
+from app.dependencies import Repos, get_repos, get_storage
 from app.main import app
+from app.tools.data.duckdb_service import create_version_duckdb, read_preview, temp_duckdb_path
+from app.tools.files.storage_service import LocalStorageBackend, version_path
 from app.schemas.cleaning import (
     CleaningIssue,
     CleaningOperation,
@@ -29,6 +31,7 @@ from app.schemas.common import (
 )
 from app.schemas.dataset import DatasetTable, DatasetVersion
 
+_WORKSPACE_ID = uuid.uuid4()
 _DATASET_ID = uuid.uuid4()
 _USER_ID = uuid.uuid4()
 
@@ -68,27 +71,35 @@ def _make_step(
 
 
 @pytest.fixture()
-def ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("app.tools.files.storage.settings.LOCAL_STORAGE_DIR", str(tmp_path))
+def ctx(tmp_path: Path):
     fresh = Repos()
+    backend = LocalStorageBackend(str(tmp_path / "storage"))
     app.dependency_overrides[get_repos] = lambda: fresh
+    app.dependency_overrides[get_storage] = lambda: backend
     client = TestClient(app)
-    yield client, fresh, tmp_path
+    yield client, fresh, backend
     app.dependency_overrides.clear()
 
 
-def _seed_execute_context(repos: Repos, tmp_path: Path, steps: list[CleaningStep]):
-    """Create version, table CSV, and plan in repos. Returns (version_id, plan_id)."""
+def _seed_execute_context(
+    repos: Repos,
+    storage: LocalStorageBackend,
+    steps: list[CleaningStep],
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Create version with DuckDB artifact and plan in repos. Returns (version_id, plan_id)."""
     version_id = uuid.uuid4()
-    csv_path = tmp_path / "orders.csv"
     df = pd.DataFrame({"product": ["  Widget  ", "Gadget"], "revenue": [100.0, 200.0]})
-    df.to_csv(csv_path, index=False)
+    spath = version_path(_WORKSPACE_ID, _DATASET_ID, 1, "original")
+    with temp_duckdb_path() as tmp_db:
+        create_version_duckdb({"orders": df}, tmp_db)
+        storage.save(spath, tmp_db.read_bytes())
 
     repos.dataset_version.save(DatasetVersion(
         dataset_version_id=version_id,
         dataset_id=_DATASET_ID,
         version_number=1,
         version_type=DatasetVersionType.original,
+        storage_path=spath,
         created_by_user_id=_USER_ID,
         created_at=_now(),
     ))
@@ -96,7 +107,6 @@ def _seed_execute_context(repos: Repos, tmp_path: Path, steps: list[CleaningStep
         table_id=uuid.uuid4(),
         dataset_version_id=version_id,
         table_name="orders",
-        storage_path=str(csv_path),
     ))
     plan = CleaningPlan(
         cleaning_plan_id=uuid.uuid4(),
@@ -172,9 +182,9 @@ def test_validate_can_execute_false_missing_approval(ctx):
 
 
 def test_execute_creates_queued_job(ctx):
-    client, repos, tmp_path = ctx
+    client, repos, backend = ctx
     step = _make_step()
-    version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
+    version_id, plan_id = _seed_execute_context(repos, backend, [step])
     workspace_id = uuid.uuid4()
 
     resp = client.post(
@@ -201,9 +211,9 @@ def test_execute_creates_queued_job(ctx):
 
 
 def test_execute_job_payload_contains_decisions(ctx):
-    client, repos, tmp_path = ctx
+    client, repos, backend = ctx
     step = _make_step()
-    version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
+    version_id, plan_id = _seed_execute_context(repos, backend, [step])
     workspace_id = uuid.uuid4()
 
     resp = client.post(
@@ -232,9 +242,9 @@ def test_execute_job_payload_contains_decisions(ctx):
 def test_worker_runs_cleaning_job_end_to_end(ctx):
     from app.worker.runner import run_one
 
-    client, repos, tmp_path = ctx
+    client, repos, backend = ctx
     step = _make_step()
-    version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
+    version_id, plan_id = _seed_execute_context(repos, backend, [step])
     workspace_id = uuid.uuid4()
 
     resp = client.post(
@@ -249,7 +259,7 @@ def test_worker_runs_cleaning_job_end_to_end(ctx):
     )
     job_id = uuid.UUID(resp.json()["job_id"])
 
-    processed = run_one(repos.job, repos, storage=None, llm=None)
+    processed = run_one(repos.job, repos, storage=backend, llm=None)
 
     assert processed is True
     saved_job = repos.job.get(job_id)
@@ -267,9 +277,9 @@ def test_worker_runs_cleaning_job_end_to_end(ctx):
 def test_worker_creates_cleaning_result_and_version(ctx):
     from app.worker.runner import run_one
 
-    client, repos, tmp_path = ctx
+    client, repos, backend = ctx
     step = _make_step()
-    version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
+    version_id, plan_id = _seed_execute_context(repos, backend, [step])
     workspace_id = uuid.uuid4()
 
     resp = client.post(
@@ -283,7 +293,7 @@ def test_worker_creates_cleaning_result_and_version(ctx):
         },
     )
     job_id = uuid.UUID(resp.json()["job_id"])
-    run_one(repos.job, repos, storage=None, llm=None)
+    run_one(repos.job, repos, storage=backend, llm=None)
 
     job = repos.job.get(job_id)
     result = repos.cleaning_result.get(job.result_id)
@@ -303,11 +313,11 @@ def test_worker_creates_cleaning_result_and_version(ctx):
 def test_worker_does_not_mutate_original_version(ctx):
     from app.worker.runner import run_one
 
-    client, repos, tmp_path = ctx
+    client, repos, backend = ctx
     step = _make_step()
-    version_id, plan_id = _seed_execute_context(repos, tmp_path, [step])
-    csv_path = tmp_path / "orders.csv"
-    original_content = csv_path.read_bytes()
+    version_id, plan_id = _seed_execute_context(repos, backend, [step])
+    original_storage_path = repos.dataset_version.get(version_id).storage_path
+    original_bytes = backend.read(original_storage_path)
     workspace_id = uuid.uuid4()
 
     resp = client.post(
@@ -320,9 +330,10 @@ def test_worker_does_not_mutate_original_version(ctx):
             "decisions": [{"step_id": str(step.step_id), "decision": "approve"}],
         },
     )
-    run_one(repos.job, repos, storage=None, llm=None)
+    run_one(repos.job, repos, storage=backend, llm=None)
 
-    assert csv_path.read_bytes() == original_content
+    # Original artifact must not be overwritten.
+    assert backend.read(original_storage_path) == original_bytes
     assert repos.dataset_version.get(version_id) is not None
 
 

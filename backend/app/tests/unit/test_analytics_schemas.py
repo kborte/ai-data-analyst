@@ -91,6 +91,7 @@ def _plan(tool_spec=None, intent=AnalyticsIntent.table_result) -> AnalyticsPlan:
     spec = tool_spec or _aggregate_spec()
     return AnalyticsPlan(
         intent=intent,
+        question="What was total revenue by month?",
         dataset_id=DATASET_ID,
         dataset_version_id=VERSION_ID,
         reasoning_summary="Group sales by month and sum revenue.",
@@ -362,6 +363,7 @@ class TestAnalyticsPlan:
         v = uuid.uuid4()
         plan = AnalyticsPlan(
             intent=AnalyticsIntent.text_answer,
+            question="What was Q4 revenue?",
             dataset_id=DATASET_ID,
             dataset_version_id=v,
             reasoning_summary="Direct answer.",

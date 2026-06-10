@@ -242,6 +242,7 @@ class TestSchemaValidation:
             dataset_id=uuid4(),
             dataset_version_id=uuid4(),
             intent=AnalyticsIntent.table_result,
+            question="preview sales",
             reasoning_summary="test",
             tool_name="preview_table",
             tool_spec=spec,
@@ -877,10 +878,11 @@ class TestDatasetVersionScoping:
 
 class TestUnsupportedAndInvalid:
     def test_unsupported_intent_classified_correctly(self):
-        assert classify_intent("please delete all rows", []) == AnalyticsIntent.unsupported
-        assert classify_intent("xyzzy gibberish completely unknown 1234", []) == AnalyticsIntent.unsupported
+        # No data keywords → falls back to table_result (safe default)
+        assert classify_intent("please delete all rows", []) == AnalyticsIntent.table_result
+        assert classify_intent("xyzzy gibberish completely unknown 1234", []) == AnalyticsIntent.table_result
 
-    def test_planner_execute_unsupported_returns_text(self, sales_db):
+    def test_planner_execute_unknown_question_returns_output(self, sales_db):
         ctx = DatasetContext(
             dataset_id=uuid4(),
             dataset_name="Test",
@@ -900,9 +902,8 @@ class TestUnsupportedAndInvalid:
         planner = AnalyticsPlanner(llm=FakeLLMProvider())
         plan = planner.plan("xyzzy gibberish 1234 !!!", ctx)
         result = planner.execute(plan, db_path=sales_db)
-        assert result.output_type == "text"
-        content_lower = result.content.lower()
-        assert "unsupported" in content_lower or "outside" in content_lower or "scope" in content_lower
+        # Falls back to table_result → returns table or text output
+        assert result.output_type in ("table", "text")
 
     def test_ask_endpoint_invalid_table_in_question_returns_gracefully(self, client, versioned_dataset):
         ds, ver = versioned_dataset

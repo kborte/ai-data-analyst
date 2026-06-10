@@ -4,6 +4,7 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   analyticsAsk,
+  analyticsWorkflow,
   createCleaningPlan,
   createFeaturePlan,
   executeCleaningPlan,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/api";
 import type {
   AnalyticsOutput,
+  ApprovalItem,
   CleaningPlan,
   Dataset,
   DatasetFile,
@@ -30,10 +32,12 @@ import type {
   DatasetTable,
   DataProfile,
   FeaturePlan,
+  NeedsApprovalResponse,
   SavedView,
   SavedVisual,
   TableOutput,
   VisualOutput,
+  WorkflowState,
 } from "@/lib/types";
 import { getCurrentUser } from "@/lib/store";
 
@@ -608,6 +612,8 @@ function VisualsPanel({ visuals }: { visuals: SavedVisual[] }) {
 type ChatMessage =
   | { id: string; role: "user"; text: string }
   | { id: string; role: "assistant"; kind: "analytics"; output: AnalyticsOutput }
+  | { id: string; role: "assistant"; kind: "workflow-result"; summary: string; outputs: AnalyticsOutput[] }
+  | { id: string; role: "assistant"; kind: "workflow-approval"; approval: NeedsApprovalResponse; question: string; datasetId: string; versionId: string; workspaceId: string }
   | { id: string; role: "assistant"; kind: "cleaning-plan"; plan: CleaningPlan; datasetId: string; versionId: string; workspaceId: string; userId: string }
   | { id: string; role: "assistant"; kind: "feature-plan"; plan: FeaturePlan; datasetId: string; versionId: string; workspaceId: string; userId: string }
   | { id: string; role: "assistant"; kind: "text"; text: string }
@@ -666,41 +672,38 @@ function ChatPanel({
     push({ id: `${base}-u`, role: "user", text: q });
 
     try {
-      const intent = detectChatIntent(q);
-
-      if (intent === "cleaning" || intent === "feature") {
-        const profiles = await listProfiles(datasetId, versionId);
-        if (profiles.length === 0) {
-          push({ id: `${base}-r`, role: "assistant", kind: "text", text: "No profile found for this version. Run profiling first (click the Versions tab and choose Profile)." });
-          return;
-        }
-        const profileId = profiles[0].profile_id;
-        const user = getCurrentUser();
-        const userId = user?.user_id ?? "";
-
-        if (intent === "cleaning") {
-          const plan = await createCleaningPlan(datasetId, versionId, profileId);
-          if (plan.plan_json.steps.length === 0) {
-            push({ id: `${base}-r`, role: "assistant", kind: "text", text: "No data quality issues found — your data looks clean!" });
-          } else {
-            push({ id: `${base}-r`, role: "assistant", kind: "cleaning-plan", plan, datasetId, versionId, workspaceId, userId });
-          }
-        } else {
-          const plan = await createFeaturePlan(datasetId, versionId, profileId);
-          if (plan.plan_json.features.length === 0) {
-            push({ id: `${base}-r`, role: "assistant", kind: "text", text: "No additional features were suggested for this dataset." });
-          } else {
-            push({ id: `${base}-r`, role: "assistant", kind: "feature-plan", plan, datasetId, versionId, workspaceId, userId });
-          }
-        }
-      } else {
-        const res = await analyticsAsk(datasetId, versionId, q);
-        push({ id: `${base}-r`, role: "assistant", kind: "analytics", output: res.output });
-      }
+      const res = await analyticsWorkflow(datasetId, versionId, q);
+      _handleWorkflowResponse(res, q, base);
     } catch (e) {
       push({ id: `${base}-e`, role: "assistant", kind: "error", text: String(e) });
     } finally {
       setLoading(false);
+    }
+  }
+
+  function _handleWorkflowResponse(res: Awaited<ReturnType<typeof analyticsWorkflow>>, question: string, base: string) {
+    if (res.response_type === "needs_approval") {
+      push({
+        id: `${base}-r`,
+        role: "assistant",
+        kind: "workflow-approval",
+        approval: res,
+        question,
+        datasetId,
+        versionId,
+        workspaceId,
+      });
+    } else if (res.response_type === "needs_clarification") {
+      push({ id: `${base}-r`, role: "assistant", kind: "text", text: res.message });
+    } else {
+      // analysis_result
+      push({
+        id: `${base}-r`,
+        role: "assistant",
+        kind: "workflow-result",
+        summary: res.summary_text,
+        outputs: res.outputs,
+      });
     }
   }
 
@@ -794,6 +797,42 @@ function MessageBubble({
     return (
       <div className="w-full">
         <OutputCard output={msg.output} datasetId={datasetId} versionId={versionId} />
+      </div>
+    );
+  }
+
+  if (msg.kind === "workflow-result") {
+    return (
+      <div className="w-full space-y-2">
+        {msg.summary && (
+          <div className="bg-white border border-gray-200 text-sm rounded-2xl rounded-tl-sm px-4 py-3 text-gray-700">
+            {msg.summary}
+          </div>
+        )}
+        {msg.outputs.map((output, i) => (
+          <OutputCard key={i} output={output} datasetId={datasetId} versionId={versionId} />
+        ))}
+      </div>
+    );
+  }
+
+  if (msg.kind === "workflow-approval") {
+    return (
+      <div className="w-full">
+        <WorkflowApprovalCard
+          approval={msg.approval}
+          question={msg.question}
+          datasetId={msg.datasetId}
+          versionId={msg.versionId}
+          onResult={(res) => onAppend({
+            id: crypto.randomUUID(),
+            role: "assistant",
+            kind: res.response_type === "analysis_result" ? "workflow-result" : res.response_type === "needs_approval" ? "workflow-approval" : "text",
+            ...(res.response_type === "analysis_result" ? { summary: res.summary_text, outputs: res.outputs } :
+                res.response_type === "needs_approval" ? { approval: res, question: msg.question, datasetId: msg.datasetId, versionId: msg.versionId, workspaceId: msg.workspaceId } :
+                { text: (res as { message: string }).message }),
+          } as ChatMessage)}
+        />
       </div>
     );
   }
@@ -1046,6 +1085,104 @@ function CleaningApprovalCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// WorkflowApprovalCard  (used by needs_approval workflow responses)
+// ---------------------------------------------------------------------------
+
+function WorkflowApprovalCard({
+  approval,
+  question,
+  datasetId,
+  versionId,
+  onResult,
+}: {
+  approval: NeedsApprovalResponse;
+  question: string;
+  datasetId: string;
+  versionId: string;
+  onResult: (res: Awaited<ReturnType<typeof analyticsWorkflow>>) => void;
+}) {
+  const [decisions, setDecisions] = useState<Record<string, "approve" | "reject">>(
+    () => Object.fromEntries(approval.items.map((it) => [it.id, it.default_decision as "approve" | "reject"]))
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  const stageLabel = approval.stage === "cleaning" ? "Data quality issues" : "Feature suggestions";
+
+  async function submit() {
+    setSubmitting(true);
+    try {
+      const decisionItems = approval.items.map((it) => ({
+        [approval.stage === "cleaning" ? "step_id" : "feature_id"]: it.id,
+        decision: decisions[it.id] ?? "approve",
+      }));
+
+      const res = await analyticsWorkflow(
+        datasetId,
+        versionId,
+        question,
+        approval.workflow_state,
+        approval.stage === "cleaning" ? decisionItems : [],
+        approval.stage === "features" ? decisionItems : [],
+      );
+      onResult(res);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="bg-white border border-amber-200 rounded-xl p-4 space-y-3 text-sm">
+      <div>
+        <p className="font-medium text-gray-800">{stageLabel}</p>
+        <p className="text-gray-500 text-xs mt-0.5">{approval.message}</p>
+      </div>
+      <div className="space-y-2">
+        {approval.items.map((item) => (
+          <div key={item.id} className="border border-gray-100 rounded-lg p-3 space-y-1">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex-1">
+                <p className="font-medium text-gray-700">{item.title}</p>
+                <p className="text-gray-500 text-xs">{item.description}</p>
+                {item.details && <p className="text-gray-400 text-xs mt-0.5">{item.details}</p>}
+              </div>
+              <div className="flex gap-1 shrink-0">
+                <button
+                  onClick={() => setDecisions((d) => ({ ...d, [item.id]: "approve" }))}
+                  className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${
+                    decisions[item.id] === "approve"
+                      ? "bg-green-600 text-white border-green-600"
+                      : "bg-white text-gray-500 border-gray-200 hover:border-green-400"
+                  }`}
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => setDecisions((d) => ({ ...d, [item.id]: "reject" }))}
+                  className={`px-2 py-1 rounded text-xs font-medium border transition-colors ${
+                    decisions[item.id] === "reject"
+                      ? "bg-red-600 text-white border-red-600"
+                      : "bg-white text-gray-500 border-gray-200 hover:border-red-400"
+                  }`}
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={submit}
+        disabled={submitting}
+        className="w-full py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+      >
+        {submitting ? "Processing…" : `Submit ${approval.items.length} decision${approval.items.length !== 1 ? "s" : ""}`}
+      </button>
     </div>
   );
 }

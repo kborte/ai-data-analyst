@@ -1,8 +1,8 @@
-"""M12E: Thin analytics API routes — ask, save-as-view, save-as-visual."""
+"""Analytics API routes — ask, workflow, save-as-view, save-as-visual."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Union
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +16,14 @@ from app.schemas.analytics import (
 )
 from app.schemas.saved_view import SavedView
 from app.schemas.saved_visual import SavedVisual
+from app.schemas.workflow import (
+    AnalysisResultResponse,
+    NeedsApprovalResponse,
+    NeedsClarificationResponse,
+    WorkflowRequest,
+)
 from app.services.analytics_context import build_dataset_context
+from app.services.analytics_orchestrator import AnalyticsOrchestrator
 from app.services.analytics_planner import AnalyticsPlanner
 from app.services.saved_artifacts import (
     save_view_from_storage_artifact,
@@ -134,6 +141,46 @@ def ask_analytics(
         question=body.question,
         plan=plan,
         output=output,
+    )
+
+
+@router.post(
+    "/datasets/{dataset_id}/versions/{dataset_version_id}/analytics/workflow",
+    response_model=Union[NeedsApprovalResponse, NeedsClarificationResponse, AnalysisResultResponse],
+)
+def analytics_workflow(
+    dataset_id: UUID,
+    dataset_version_id: UUID,
+    body: WorkflowRequest,
+    repos: Repos = Depends(get_repos),
+    storage: StorageBackend = Depends(get_storage),
+    llm: LLMProvider = Depends(get_llm_provider),
+) -> Union[NeedsApprovalResponse, NeedsClarificationResponse, AnalysisResultResponse]:
+    version = repos.dataset_version.get(dataset_version_id)
+    if version is None or version.dataset_id != dataset_id:
+        raise HTTPException(status_code=404, detail="DatasetVersion not found")
+
+    dataset = repos.dataset.get(dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    if not version.storage_path or not version.storage_path.endswith(".duckdb"):
+        raise HTTPException(
+            status_code=422,
+            detail="Dataset version has no DuckDB artifact. Run file ingestion first.",
+        )
+
+    orchestrator = AnalyticsOrchestrator(repos=repos, storage=storage, llm=llm)
+    return orchestrator.run(
+        question=body.question,
+        dataset_id=dataset_id,
+        dataset_version_id=dataset_version_id,
+        workspace_id=dataset.workspace_id,
+        workflow_state=body.workflow_state,
+        cleaning_decisions=body.cleaning_decisions,
+        feature_decisions=body.feature_decisions,
+        recent_messages=body.recent_messages,
+        prior_output_refs=body.prior_output_refs,
     )
 
 

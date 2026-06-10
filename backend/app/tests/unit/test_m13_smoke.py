@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +18,7 @@ from app.dependencies import Repos, get_llm_provider, get_repos, get_storage
 from app.main import app
 from app.schemas.common import DatasetVersionType
 from app.schemas.dataset import Dataset, DatasetVersion
+from app.schemas.workspace import Workspace
 from app.schemas.saved_view import SavedViewSourceType
 from app.tools.data.duckdb_service import create_version_duckdb
 from app.tools.files.storage_service import LocalStorageBackend
@@ -44,6 +45,12 @@ def storage_dir(tmp_path: Path) -> Path:
 def ctx(storage_dir: Path):
     """Standard memory-repos + local-storage client used across smoke tests."""
     repos = Repos()
+    repos.workspace.save(Workspace(
+        workspace_id=UUID(WORKSPACE_ID),
+        name="test workspace",
+        created_by_user_id=uuid4(),
+        created_at=datetime.now(tz=timezone.utc),
+    ))
     backend = LocalStorageBackend(str(storage_dir))
     app.dependency_overrides[get_repos] = lambda: repos
     app.dependency_overrides[get_storage] = lambda: backend
